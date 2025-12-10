@@ -13,7 +13,7 @@ class Frhs(ODE.ODE_F_RHS):
         return 0.1
 
     def Jacobian(self, u, cStage, iStage):
-        return np.eye(u.shape[0]) * -0.001
+        return np.eye(u.shape[0]) * -1
 
     def __call__(self, u, cStage, iStage):
         return self.Jacobian(u, cStage, iStage) @ u
@@ -23,26 +23,25 @@ class FrhsDITRExp(Frhs):
     def __init__(self):
         pass
 
-    def Jacobian(self, u, cStage, iStage):
-        return super().Jacobian(u, cStage, iStage) + np.eye(u.shape[0]) * -0
+    def Jacobian(self, u, cStage, iStage): 
+        return super().Jacobian(u, cStage, iStage) 
 
-    def JacobianExpo(self, u, dt, cStage, iStage):
-        self.currentA = super().Jacobian(u, cStage, iStage)
-        self.currentAh = self.currentA * dt
-        return self.currentAh
+    def JacobianExpo(self, u, cStage, iStage):
+        self.currentA = super().Jacobian(u, cStage, iStage) * 0.5 + np.eye(u.shape[0]) * -0
+        return self.currentA
 
     def JacobianExpoEye(self, u):
-        return np.ones_like(u)
+        return np.eye(u.shape[0])
 
     def JacobianExpoMult(self, JExpo, u):
         return JExpo @ u
 
     def JacobianExpoExp(self, u, dt, cStage, iStage):
-        Ah = self.currentAh
+        Ah = self.currentA * dt
         return spl.expm(Ah)
 
     def JacobianExpoPhikSeq(self, u, dt, k_max, cStage, iStage):
-        Ah = self.currentAh
+        Ah = self.currentA * dt
         AhInv = np.linalg.pinv(Ah)
         ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
         for k in range(k_max):

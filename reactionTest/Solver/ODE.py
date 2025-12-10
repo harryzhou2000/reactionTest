@@ -33,9 +33,9 @@ class ODE_F_RHS(ABC):
     def dt(self, u: np.ndarray, cStage, iStage) -> float:
         pass
 
-    def JacobianExpo(self, u: np.ndarray, dt, cStage, iStage):
+    def JacobianExpo(self, u: np.ndarray, cStage, iStage):
         self.currentA = np.zeros_like(u) - 1e-300
-        return self.currentA * dt
+        return self.currentA
 
     def JacobianExpoEye(self, u: np.ndarray):
         return np.ones_like(u)
@@ -150,7 +150,7 @@ class DITRExp(ImplicitOdeIntegrator):
         umid = uLast.copy()
         u = uLast.copy()
 
-        Ah = fRHS.JacobianExpo(u, dt, cStage=0.0, iStage=1)
+        A = fRHS.JacobianExpo(u, cStage=0.0, iStage=1)
         expc2hA = fRHS.JacobianExpoExp(u, dt * self.c2, cStage=0.0, iStage=1)
         phi0, phi1, phi2, phi3 = fRHS.JacobianExpoPhikSeq(
             u, dt, 3, cStage=0.0, iStage=1
@@ -167,7 +167,7 @@ class DITRExp(ImplicitOdeIntegrator):
         b1 = 1 / self.c2 * (self.c2 * phi1 - (1 + self.c2) * phi2 + 2 * phi3)
         b2 = (phi2 - 2 * phi3) / ((1 - self.c2) * self.c2)
         b3 = 1 / (1 - self.c2) * (-self.c2 * phi2 + 2 * phi3)
-        d1pd3mhA = self.d1 * eye + Ah * self.d3
+        d1pd3mhA = self.d1 * eye + A * dt * self.d3
         a21 = eye * self.d2 + d1pd3mhA * b1
         a22 = d1pd3mhA * b2
         a23 = eye * self.d3 + d1pd3mhA * b3
