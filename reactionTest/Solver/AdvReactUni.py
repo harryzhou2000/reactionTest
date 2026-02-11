@@ -261,16 +261,19 @@ class AdvReactUni1DSolver:
                 raise NotImplementedError()
 
             def JacobianExpo(self, u, cStage, iStage):
+                self.currentU = u.copy()
                 JDSource = eval.rhs_source_jacobian(u)
                 # TODO: handle if JDSource is a matrix
                 if JDSource.ndim == 2:
                     if self.eval.model == "":
                         JDSource = eval.rhs_flow_jacobian_diag(u)
-                    # self.currentA = np.minimum(JDSource, np.abs(JDSource).max() * -1e-8)
-                    JDSourceScale = np.abs(JDSource).max()
-                    iFix = np.abs(JDSource) < JDSourceScale * 1e-6
-                    JDSource[iFix] = np.sign(JDSource[iFix]) * JDSourceScale * 1e-6
-                    self.currentA = JDSource
+                    self.currentA = (
+                        np.minimum(JDSource, np.abs(JDSource).max() * -1e-4) * 1
+                    )
+                    # JDSourceScale = np.abs(JDSource).max()
+                    # iFix = np.abs(JDSource) < JDSourceScale * 1e-6
+                    # JDSource[iFix] = np.sign(JDSource[iFix]) * JDSourceScale * 1e-6
+                    # self.currentA = JDSource
 
                     # self.currentA = np.ones_like(u) * (-20.0)
                     return self.currentA
@@ -287,15 +290,18 @@ class AdvReactUni1DSolver:
 
             def JacobianExpoPhikSeq(self, u, dt, k_max, cStage, iStage):
                 Ah = self.currentA * dt
+                ifFix = np.abs(Ah) < 1e-3
                 AhInv = self.eval.invert_jacobian_diag(Ah)
                 ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
+                ret[0][ifFix] = ODE.expo_quad_phik0(0)
                 for k in range(k_max):
                     ret.append(AhInv * (ret[k] - ODE.expo_quad_phik0(k)))
+                    ret[-1][ifFix] = ODE.expo_quad_phik0(k + 1)
                 return ret
 
             def __call__(self, u, cStage, iStage):
                 return super().__call__(u, cStage, iStage) - self.JacobianExpoMult(
-                    self.currentA, u
+                    self.currentA, u - self.currentU
                 )
 
         class FsolveDITR(Fsolve):
@@ -350,6 +356,8 @@ class AdvReactUni1DSolver:
                             -(u) / dt
                             + fRHS.JacobianExpoMult(alphaRHS[iStageI][0], rhs[0])
                             + fRHS.JacobianExpoMult(alphaRHS[iStageI][1], rhs[1])
+                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][0], us[0]) / dt
+                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][1], us[1]) / dt
                             + fRes[iStageI]
                         )
                         alphaRHSDiag = alphaRHS[iStageI][iStageI]
@@ -365,8 +373,12 @@ class AdvReactUni1DSolver:
                             JDSource = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_source_jacobian(u)
                             )
-                            if self.eval.model != "" and isinstance(fRHS, FrhsDITRExp):
-                                JDSource -= fRHS.JacobianExpo(u0[0], 0.0, 0)
+                            # if self.eval.model != "" and isinstance(fRHS, FrhsDITRExp):
+                            #     JDSource -= fRHS.JacobianExpo(u0[0], 0.0, 0)
+                            if isinstance(fRHS, FrhsDITRExp):
+                                JDSource += fRHS.JacobianExpoMult(
+                                    alphaRHSDiag, fRHS.JacobianExpo(u0[0], 0.0, 0)
+                                )
                             JDFlow += JDSource  # TODO: make compatible with matrix
                             JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
 

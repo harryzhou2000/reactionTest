@@ -135,15 +135,24 @@ class ESDIRK(ImplicitOdeIntegrator):
 
 class DITRExp(ImplicitOdeIntegrator):
 
-    def __init__(self, c2=0.5):
+    def __init__(self, c2=0.5, method="U2R2"):
         super().__init__()
 
         self.c2 = c2
+        self.method = method
+        if method == "U2R2":
 
-        self.d0 = 1 - (3 * c2**2 - 2 * c2**3)
-        self.d1 = 1 - self.d0
-        self.d2 = c2 - 2 * c2**2 + c2**3
-        self.d3 = -(c2**2) + c2**3
+            self.d0 = 1 - (3 * c2**2 - 2 * c2**3)
+            self.d1 = 1 - self.d0
+            self.d2 = c2 - 2 * c2**2 + c2**3
+            self.d3 = -(c2**2) + c2**3
+        elif method == "U2R1":
+            self.d0 = 1 - 2 * c2 + c2**2
+            self.d1 = 1 - self.d0
+            self.d2 = 0
+            self.d3 = c2**2 - c2
+        else:
+            raise ValueError()
 
     def step(self, dt: float, u, fRHS: ODE_F_RHS, fSolve: ODE_F_SOLVE_SingleStage):
         uLast = u
@@ -161,6 +170,10 @@ class DITRExp(ImplicitOdeIntegrator):
 
         eye = fRHS.JacobianExpoEye(u)
 
+        # u1 = fRHS.JacobianExpoMult(phi0, uLast) + phi1 * dt * rhsLast
+        # # u1 = np.exp(A * dt) * uLast + (np.exp(A * dt) - 1) / A * rhsLast
+        # return u1
+
         uLastBc2 = fRHS.JacobianExpoMult(expc2hA, uLast)
         uLastB1 = fRHS.JacobianExpoMult(phi0, uLast)
 
@@ -172,10 +185,26 @@ class DITRExp(ImplicitOdeIntegrator):
         a22 = d1pd3mhA * b2
         a23 = eye * self.d3 + d1pd3mhA * b3
 
-        alphas = [[a22, a23], [b2, b3]]
+        #TODO: add interface for inverting the matrix
+        a22Invb2 = 1.0 / a22 * b2 * 1 * 1.0
+        # a22Invb2 = 0.5
+        
+        alphas = [
+            [a22, a23],
+            [
+                b2 - fRHS.JacobianExpoMult(a22, a22Invb2),
+                b3 - fRHS.JacobianExpoMult(a23, a22Invb2),
+            ],
+            [eye * 0, eye * 0],
+            [(a22Invb2), eye * 0],
+        ]
 
-        fResMid = uLastBc2 / dt + fRHS.JacobianExpoMult(a21, rhsLast)
-        fRes1 = uLastB1 / dt + fRHS.JacobianExpoMult(b1, rhsLast)
+        # fResMid = uLastBc2 / dt + fRHS.JacobianExpoMult(a21, rhsLast)
+        # fRes1 = uLastB1 / dt + fRHS.JacobianExpoMult(b1, rhsLast)
+        fResMid = uLast / dt + fRHS.JacobianExpoMult(a21, rhsLast)
+        fRes1 = uLast / dt + fRHS.JacobianExpoMult(b1, rhsLast)
+
+        fRes1 = fRes1 - fRHS.JacobianExpoMult(a22Invb2, fResMid)
 
         (umid, u1), (rhsMid, rhs1) = fSolve(
             u0=[umid, u],

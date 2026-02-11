@@ -27,7 +27,8 @@ class FrhsDITRExp(Frhs):
         return super().Jacobian(u, cStage, iStage) 
 
     def JacobianExpo(self, u, cStage, iStage):
-        self.currentA = super().Jacobian(u, cStage, iStage) * 0.5 + np.eye(u.shape[0]) * -0
+        self.currentA = super().Jacobian(u, cStage, iStage) * 0.001 + np.eye(u.shape[0]) * -0
+        self.currentU = u.copy()
         return self.currentA
 
     def JacobianExpoEye(self, u):
@@ -50,7 +51,7 @@ class FrhsDITRExp(Frhs):
 
     def __call__(self, u, cStage, iStage):
         return super().__call__(u, cStage, iStage) - self.JacobianExpoMult(
-            self.currentA, u
+            self.currentA, u - self.currentU
         )
 
 
@@ -92,6 +93,8 @@ class FsolveDITR(ODE.ODE_F_SOLVE_SingleStage):
                     -(u) / dt
                     + fRHS.JacobianExpoMult(alphaRHS[iStageI][0], rhs[0])
                     + fRHS.JacobianExpoMult(alphaRHS[iStageI][1], rhs[1])
+                    + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][0], us[0]) / dt
+                    + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][1], us[1]) / dt
                     + fRes[iStageI]
                 )
                 alphaRHSDiag = alphaRHS[iStageI][iStageI]

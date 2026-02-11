@@ -9,12 +9,12 @@ fv = FVUni2nd1D(nx=Nx)
 ev = AdvReactUni1DEval(
     fv=fv,
     model="bistable",
-    params={"a": 0.5, "k": 100},
+    params={"a": 0.5, "k": 1000},
 )
 # solver = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("BackwardEuler"))
 solver = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
 
-dt = 1 / Nx * 0.5 * 4
+dt = 1 / Nx * 0.5 * 1
 tEnd = 0.5
 
 u = np.array([np.sin(fv.xcs * np.pi * 2)]) * 0.5 + 1
