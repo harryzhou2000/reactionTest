@@ -5,6 +5,7 @@ else:
     from .FVUni2nd import FVUni2nd1D
     from . import ODE
 import numpy as np
+import scipy.linalg as spl
 
 
 class AdvReactUni1DEval:
@@ -33,7 +34,7 @@ class AdvReactUni1DEval:
         nVars, nx = self.fv.get_shape_u(u)
 
         rhsJD = np.zeros((nVars, nx))
-        for nx, dx, (uN,) in self.fv.cellOthers((u)):
+        for nx, dx, (uN,) in self.fv.cellOthers((u,)):
             uRec = u
             uRecN = uN
             an = self.ax * nx
@@ -94,11 +95,49 @@ class AdvReactUni1DEval:
         duNew = self.jacobian_diag_mult(rhsJDInv, duNew)
         return duNew
 
+    def rhs_diffusion(self, u: np.ndarray):
+        eps = self.params.get("eps", 0.0)
+        if eps == 0.0:
+            return 0 * u
+        # Central difference Laplacian: (u_{i-1} - 2u_i + u_{i+1}) / dx^2
+        rhs = np.zeros_like(u)
+        for nx, dx, (uN,) in self.fv.cellOthers((u,)):
+            rhs += uN - u
+        rhs *= eps / (self.fv.hx**2)
+        return rhs
+
+    def rhs_diffusion_jacobian_diag(self, u: np.ndarray):
+        eps = self.params.get("eps", 0.0)
+        if eps == 0.0:
+            return 0 * u
+        # d(rhs)/du_i = -2 * eps / dx^2 (from the -2u_i term)
+        nVars, nx = self.fv.get_shape_u(u)
+        return np.full((nVars, nx), -2.0 * eps / (self.fv.hx**2))
+
+    def rhs_diffusion_jacobian_matvec(self, u: np.ndarray, du: np.ndarray):
+        eps = self.params.get("eps", 0.0)
+        if eps == 0.0:
+            return 0 * du
+        drhs = np.zeros_like(du)
+        for nx, dx, (duN,) in self.fv.cellOthers((du,)):
+            drhs += duN - du
+        drhs *= eps / (self.fv.hx**2)
+        return drhs
+
     def rhs_source(self, u: np.ndarray):
         if self.model == "bistable":
             a = self.params["a"]
             k = self.params["k"]
             return u * (1 - u) * (u - a) * k
+        elif self.model == "brusselator":
+            A = self.params["A"]
+            B = self.params["B"]
+            k = self.params["k"]
+            uu = u[0:1]
+            vv = u[1:2]
+            Su = k * (A - (B + 1) * uu + uu**2 * vv)
+            Sv = k * (B * uu - uu**2 * vv)
+            return np.concatenate([Su, Sv], axis=0)
         return 0 * u
 
     def rhs_source_jacobian(self, u: np.ndarray):
@@ -106,6 +145,20 @@ class AdvReactUni1DEval:
             a = self.params["a"]
             k = self.params["k"]
             return (2 * u - a + 2 * a * u - 3 * u**2) * k
+        elif self.model == "brusselator":
+            A = self.params["A"]
+            B = self.params["B"]
+            k = self.params["k"]
+            uu = u[0:1]
+            vv = u[1:2]
+            nVars, nx = self.fv.get_shape_u(u)
+            # Jacobian is 2x2 per point: [[dSu/du, dSu/dv], [dSv/du, dSv/dv]]
+            J = np.zeros((nVars, nVars, nx))
+            J[0, 0] = k * (-(B + 1) + 2 * uu[0] * vv[0])
+            J[0, 1] = k * (uu[0] ** 2)
+            J[1, 0] = k * (B - 2 * uu[0] * vv[0])
+            J[1, 1] = k * (-(uu[0] ** 2))
+            return J
         return 1e-100 + u * 0
 
     def invert_jacobian_diag(self, JD: np.ndarray):
@@ -120,6 +173,26 @@ class AdvReactUni1DEval:
             return np.moveaxis(JDI, (-2, -1), (0, 1))
 
         raise badShape
+
+    def promote_to_matrix_diag(self, JD: np.ndarray):
+        """Promote (nVars, nx) -> (nVars, nVars, nx) diagonal matrix."""
+        if JD.ndim == 3:
+            return JD
+        nVars, nx = JD.shape
+        out = np.zeros((nVars, nVars, nx))
+        for i in range(nVars):
+            out[i, i] = JD[i]
+        return out
+
+    def add_jacobian_diags(self, A: np.ndarray, B: np.ndarray):
+        """Add two Jacobian diagonals, promoting if dimensions differ."""
+        if A.ndim == B.ndim:
+            return A + B
+        if A.ndim == 2 and B.ndim == 3:
+            return self.promote_to_matrix_diag(A) + B
+        if A.ndim == 3 and B.ndim == 2:
+            return A + self.promote_to_matrix_diag(B)
+        raise ValueError(f"Cannot add Jacobian diags of ndim {A.ndim} and {B.ndim}")
 
     def jacobian_diag_mult(self, JD: np.ndarray, u: np.ndarray):
         badShape = ValueError("Jacobian Diag shape not valid: " + f"{JD.shape}")
@@ -149,9 +222,9 @@ class AdvReactUni1DSolver:
 
             def __call__(self, u, cStage, iStage):
                 if self.mode == "full":
-                    return self.eval.rhs_flow(u) + self.eval.rhs_source(u)
+                    return self.eval.rhs_flow(u) + self.eval.rhs_diffusion(u) + self.eval.rhs_source(u)
                 elif self.mode == "flow":
-                    return self.eval.rhs_flow(u)
+                    return self.eval.rhs_flow(u) + self.eval.rhs_diffusion(u)
                 elif self.mode == "source":
                     return self.eval.rhs_source(u)
                 else:
@@ -201,10 +274,11 @@ class AdvReactUni1DSolver:
                     du = np.zeros_like(u)
                     if self.mode == "full":
                         JDFlow = -alphaRHS * self.eval.rhs_flow_jacobian_diag(u)
+                        JDFlow += -alphaRHS * self.eval.rhs_diffusion_jacobian_diag(u)
                         JDFlow += 1 / (dTau) + 1 / dt
                         # JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
                         JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
-                        JDFlow += JDSource  # TODO: make compatible with matrix
+                        JDFlow = self.eval.add_jacobian_diags(JDFlow, JDSource)
                         JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
 
                         for iJ in range(3):
@@ -213,6 +287,7 @@ class AdvReactUni1DSolver:
                             )
                     elif self.mode == "flow":
                         JDFlow = -alphaRHS * self.eval.rhs_flow_jacobian_diag(u)
+                        JDFlow += -alphaRHS * self.eval.rhs_diffusion_jacobian_diag(u)
                         JDFlow += 1 / (dTau) + 1 / dt
                         JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
 
@@ -222,7 +297,12 @@ class AdvReactUni1DSolver:
                             )
                     elif self.mode == "source":
                         JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
-                        JDSource += 1 / (dTau) + 1 / dt
+                        if JDSource.ndim == 3:
+                            nV = JDSource.shape[0]
+                            eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDSource.shape[2]))
+                            JDSource += (1 / (dTau) + 1 / dt) * eyeNx
+                        else:
+                            JDSource += 1 / (dTau) + 1 / dt
                         JDSourceInv = self.eval.invert_jacobian_diag(JDSource)
                         du = self.eval.jacobian_diag_mult(JDSourceInv, res)
                     else:
@@ -263,41 +343,103 @@ class AdvReactUni1DSolver:
             def JacobianExpo(self, u, cStage, iStage):
                 self.currentU = u.copy()
                 JDSource = eval.rhs_source_jacobian(u)
-                # TODO: handle if JDSource is a matrix
                 if JDSource.ndim == 2:
+                    # Per-element scalar diagonal (original path)
                     if self.eval.model == "":
                         JDSource = eval.rhs_flow_jacobian_diag(u)
                     self.currentA = (
                         np.minimum(JDSource, np.abs(JDSource).max() * -1e-4) * 1
                     )
-                    # JDSourceScale = np.abs(JDSource).max()
-                    # iFix = np.abs(JDSource) < JDSourceScale * 1e-6
-                    # JDSource[iFix] = np.sign(JDSource[iFix]) * JDSourceScale * 1e-6
-                    # self.currentA = JDSource
-
-                    # self.currentA = np.ones_like(u) * (-20.0)
+                    return self.currentA
+                elif JDSource.ndim == 3:
+                    # Per-point dense matrix: shape (nVars, nVars, nx)
+                    # Eigendecompose, clamp eigenvalue real parts to strictly
+                    # negative, then reconstruct.  This keeps the eigenvector
+                    # structure intact while guaranteeing exp(A*dt) decays.
+                    nVars, _, nx = JDSource.shape
+                    Jt = np.moveaxis(JDSource, (0, 1), (-2, -1))  # (nx, nV, nV)
+                    At = np.empty_like(Jt)
+                    maxAbsEig = max(np.abs(np.linalg.eigvals(Jt)).max(), 1e-30)
+                    eps_shift = maxAbsEig * 1e-4
+                    for ix in range(nx):
+                        eigvals, V = np.linalg.eig(Jt[ix])
+                        # Clamp: keep imaginary part, force real part <= -eps
+                        clamped = eigvals.copy()
+                        clamped.real = np.minimum(eigvals.real, -eps_shift)
+                        At[ix] = (V @ np.diag(clamped) @ np.linalg.inv(V)).real
+                    self.currentA = np.moveaxis(At, (-2, -1), (0, 1))
                     return self.currentA
 
             def JacobianExpoEye(self, u):
-                return np.ones_like(u)
+                nVars = u.shape[0]
+                if nVars == 1:
+                    return np.ones_like(u)
+                nx = u.shape[1]
+                return np.eye(nVars).reshape(nVars, nVars, 1) * np.ones((1, 1, nx))
 
             def JacobianExpoMult(self, JExpo, u):
+                if JExpo.ndim == 2 and u.ndim == 2:
+                    return JExpo * u
+                elif JExpo.ndim == 3 and u.ndim == 2:
+                    return np.einsum("ij...,j...->i...", JExpo, u)
+                elif JExpo.ndim == 3 and u.ndim == 3:
+                    return np.einsum("ij...,jk...->ik...", JExpo, u)
                 return JExpo * u
 
             def JacobianExpoExp(self, u, dt, cStage, iStage):
-                Ah = self.currentA * dt
-                return np.exp(Ah)
+                if self.currentA.ndim == 2:
+                    Ah = self.currentA * dt
+                    return np.exp(Ah)
+                elif self.currentA.ndim == 3:
+                    nVars, _, nx = self.currentA.shape
+                    Ah = self.currentA * dt
+                    # (nx, nVars, nVars) batch matrix exponential
+                    Aht = np.moveaxis(Ah, (0, 1), (-2, -1))
+                    expAht = np.zeros_like(Aht)
+                    for ix in range(nx):
+                        expAht[ix] = spl.expm(Aht[ix])
+                    return np.moveaxis(expAht, (-2, -1), (0, 1))
 
             def JacobianExpoPhikSeq(self, u, dt, k_max, cStage, iStage):
-                Ah = self.currentA * dt
-                ifFix = np.abs(Ah) < 1e-3
-                AhInv = self.eval.invert_jacobian_diag(Ah)
-                ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
-                ret[0][ifFix] = ODE.expo_quad_phik0(0)
-                for k in range(k_max):
-                    ret.append(AhInv * (ret[k] - ODE.expo_quad_phik0(k)))
-                    ret[-1][ifFix] = ODE.expo_quad_phik0(k + 1)
-                return ret
+                if self.currentA.ndim == 2:
+                    Ah = self.currentA * dt
+                    ifFix = np.abs(Ah) < 1e-3
+                    AhInv = self.eval.invert_jacobian_diag(Ah)
+                    ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
+                    ret[0][ifFix] = ODE.expo_quad_phik0(0)
+                    for k in range(k_max):
+                        ret.append(AhInv * (ret[k] - ODE.expo_quad_phik0(k)))
+                        ret[-1][ifFix] = ODE.expo_quad_phik0(k + 1)
+                    return ret
+                elif self.currentA.ndim == 3:
+                    nVars, _, nx = self.currentA.shape
+                    Ah = self.currentA * dt
+                    Aht = np.moveaxis(Ah, (0, 1), (-2, -1))  # (nx, nV, nV)
+                    eye = np.eye(nVars)
+
+                    # Check for small norm to use Taylor fallback
+                    AhNorms = np.linalg.norm(Aht, axis=(-2, -1))  # (nx,)
+                    ifFix = AhNorms < 1e-3
+
+                    AhInv = self.eval.invert_jacobian_diag(Ah)  # (nV, nV, nx)
+
+                    ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
+                    # Fix small-norm points
+                    eyeBC = np.eye(nVars).reshape(nVars, nVars, 1) * np.ones((1, 1, nx))
+                    for ix in np.where(ifFix)[0]:
+                        ret[0][:, :, ix] = ODE.expo_quad_phik0(0) * eye
+
+                    for k in range(k_max):
+                        phik0_eye = ODE.expo_quad_phik0(k) * eyeBC
+                        next_phi = self._matmul3d(AhInv, ret[k] - phik0_eye)
+                        for ix in np.where(ifFix)[0]:
+                            next_phi[:, :, ix] = ODE.expo_quad_phik0(k + 1) * eye
+                        ret.append(next_phi)
+                    return ret
+
+            def _matmul3d(self, A, B):
+                """Batch multiply two (nVars, nVars, nx) matrices."""
+                return np.einsum("ij...,jk...->ik...", A, B)
 
             def __call__(self, u, cStage, iStage):
                 return super().__call__(u, cStage, iStage) - self.JacobianExpoMult(
@@ -373,8 +515,17 @@ class AdvReactUni1DSolver:
                             JDFlow = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
                             )
+                            JDFlow += -fRHS.JacobianExpoMult(
+                                alphaRHSDiag, self.eval.rhs_diffusion_jacobian_diag(u)
+                            )
 
-                            JDFlow += 1 / (dTau) + 1 / dt
+                            scalarDiag = 1 / (dTau) + 1 / dt
+                            if JDFlow.ndim == 3:
+                                nV = JDFlow.shape[0]
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                JDFlow += scalarDiag * eyeNx
+                            else:
+                                JDFlow += scalarDiag
                             # JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
                             JDSource = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_source_jacobian(u)
@@ -385,15 +536,24 @@ class AdvReactUni1DSolver:
                                 JDSource += fRHS.JacobianExpoMult(
                                     alphaRHSDiag, fRHS.JacobianExpo(u0[0], 0.0, 0)
                                 )
-                            JDFlow += JDSource  # TODO: make compatible with matrix
+                            JDFlow = self.eval.add_jacobian_diags(JDFlow, JDSource)
                             JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
 
                         elif self.mode == "flow":
                             JDFlow = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
                             )
+                            JDFlow += -fRHS.JacobianExpoMult(
+                                alphaRHSDiag, self.eval.rhs_diffusion_jacobian_diag(u)
+                            )
 
-                            JDFlow += 1 / (dTau) + 1 / dt
+                            scalarDiag = 1 / (dTau) + 1 / dt
+                            if JDFlow.ndim == 3:
+                                nV = JDFlow.shape[0]
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                JDFlow += scalarDiag * eyeNx
+                            else:
+                                JDFlow += scalarDiag
                             JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
 
                         elif self.mode == "source":
@@ -404,7 +564,13 @@ class AdvReactUni1DSolver:
                                 * 0.0
                             )
 
-                            JDFlow += 1 / (dTau) + 1 / dt
+                            scalarDiag = 1 / (dTau) + 1 / dt
+                            if JDFlow.ndim == 3:
+                                nV = JDFlow.shape[0]
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                JDFlow += scalarDiag * eyeNx
+                            else:
+                                JDFlow += scalarDiag
                             # JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
                             JDSource = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_source_jacobian(u)
@@ -415,7 +581,7 @@ class AdvReactUni1DSolver:
                                 JDSource += fRHS.JacobianExpoMult(
                                     alphaRHSDiag, fRHS.JacobianExpo(u0[0], 0.0, 0)
                                 )
-                            JDFlow += JDSource  # TODO: make compatible with matrix
+                            JDFlow = self.eval.add_jacobian_diags(JDFlow, JDSource)
                             JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
                         else:
                             raise NotImplementedError()

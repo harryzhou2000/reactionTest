@@ -215,13 +215,22 @@ class DITRExp(ImplicitOdeIntegrator):
         b2 = (phi2 - 2 * phi3) / ((1 - self.c2) * self.c2)
         b3 = 1 / (1 - self.c2) * (-self.c2 * phi2 + 2 * phi3)
         d1pd3mhA = self.d1 * eye + A * dt * self.d3
-        a21 = eye * self.d2 + d1pd3mhA * b1
-        a22 = d1pd3mhA * b2
-        a23 = eye * self.d3 + d1pd3mhA * b3
+        a21 = eye * self.d2 + fRHS.JacobianExpoMult(d1pd3mhA, b1)
+        a22 = fRHS.JacobianExpoMult(d1pd3mhA, b2)
+        a23 = eye * self.d3 + fRHS.JacobianExpoMult(d1pd3mhA, b3)
 
-        # TODO: add interface for inverting the matrix
-        a22Invb2 = 1.0 / a22 * b2 * 1 * 1.0
-        # a22Invb2 = 0.5
+        # inv(a22) @ b2 -- for ndim==2 this is 1/a22 * b2, for ndim==3 matrix inverse
+        if a22.ndim == 2:
+            a22Invb2 = 1.0 / a22 * b2 * 1 * 1.0
+        elif a22.ndim == 3:
+            nVars = a22.shape[0]
+            nx = a22.shape[2]
+            a22t = np.moveaxis(a22, (0, 1), (-2, -1))  # (nx, nV, nV)
+            b2t = np.moveaxis(b2, (0, 1), (-2, -1))
+            a22Invb2t = np.linalg.solve(a22t, b2t)
+            a22Invb2 = np.moveaxis(a22Invb2t, (-2, -1), (0, 1))
+        else:
+            a22Invb2 = 1.0 / a22 * b2
 
         alphas = [
             [a22, a23],
