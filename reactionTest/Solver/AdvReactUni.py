@@ -324,7 +324,11 @@ class AdvReactUni1DSolver:
                     **kwargs,
                 )
 
-                if mode not in {"full"}:
+                if mode not in {
+                    "full",
+                    "flow",
+                    "source",
+                }:
                     raise ValueError("mode not valid")
 
             def __call__(
@@ -356,8 +360,10 @@ class AdvReactUni1DSolver:
                             -(u) / dt
                             + fRHS.JacobianExpoMult(alphaRHS[iStageI][0], rhs[0])
                             + fRHS.JacobianExpoMult(alphaRHS[iStageI][1], rhs[1])
-                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][0], us[0]) / dt
-                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][1], us[1]) / dt
+                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][0], us[0])
+                            / dt
+                            + fRHS.JacobianExpoMult(alphaRHS[iStageI + 2][1], us[1])
+                            / dt
                             + fRes[iStageI]
                         )
                         alphaRHSDiag = alphaRHS[iStageI][iStageI]
@@ -382,12 +388,42 @@ class AdvReactUni1DSolver:
                             JDFlow += JDSource  # TODO: make compatible with matrix
                             JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
 
-                            for iJ in range(3):
-                                du = self.eval.rhs_flow_jacobian_jacobiIterExpo(
-                                    u, res, du, alphaRHSDiag, JDFullInv
+                        elif self.mode == "flow":
+                            JDFlow = -fRHS.JacobianExpoMult(
+                                alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
+                            )
+
+                            JDFlow += 1 / (dTau) + 1 / dt
+                            JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
+
+                        elif self.mode == "source":
+                            JDFlow = (
+                                -fRHS.JacobianExpoMult(
+                                    alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
                                 )
+                                * 0.0
+                            )
+
+                            JDFlow += 1 / (dTau) + 1 / dt
+                            # JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
+                            JDSource = -fRHS.JacobianExpoMult(
+                                alphaRHSDiag, self.eval.rhs_source_jacobian(u)
+                            )
+                            # if self.eval.model != "" and isinstance(fRHS, FrhsDITRExp):
+                            #     JDSource -= fRHS.JacobianExpo(u0[0], 0.0, 0)
+                            if isinstance(fRHS, FrhsDITRExp):
+                                JDSource += fRHS.JacobianExpoMult(
+                                    alphaRHSDiag, fRHS.JacobianExpo(u0[0], 0.0, 0)
+                                )
+                            JDFlow += JDSource  # TODO: make compatible with matrix
+                            JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
                         else:
                             raise NotImplementedError()
+
+                        for iJ in range(3):
+                            du = self.eval.rhs_flow_jacobian_jacobiIterExpo(
+                                u, res, du, alphaRHSDiag, JDFullInv
+                            )
                         u += du
                         rhs[iStageI] = fRHS(u, cStageC, iStageC)
 
@@ -412,7 +448,15 @@ class AdvReactUni1DSolver:
         self.FrhsDITRExp = FrhsDITRExp
         self.FsolveDITR = FsolveDITR
 
-    def step(self, dt: float, u: np.ndarray, mode="full", use_exp=False, solve_opts={}):
+    def step(
+        self,
+        dt: float,
+        u: np.ndarray,
+        mode="full",
+        use_exp=False,
+        solve_opts={},
+        uForce=lambda c2: 0.0,
+    ):
         mode_frhs = mode
         mode_fsolve = mode
         if isinstance(self.ode, ODE.DITRExp):
@@ -425,12 +469,14 @@ class AdvReactUni1DSolver:
                     else self.Frhs(self.eval, mode=mode_frhs)
                 ),
                 self.FsolveDITR(self.eval, mode=mode_fsolve, **solve_opts),
+                fForce=uForce,
             )
         return self.ode.step(
             dt,
             u,
             self.Frhs(self.eval, mode=mode_frhs),
             self.Fsolve(self.eval, mode=mode_fsolve, **solve_opts),
+            fForce=uForce,
         )
 
     def stepInterval(
@@ -467,6 +513,28 @@ class AdvReactUni1DSolver:
                         dtC / N_react, u, mode="source", solve_opts=solve_opts
                     )
                 u = self.step(dtC * 0.5, u, mode="flow", solve_opts=solve_opts)
+            elif mode == "embed":
+                cs = self.ode.get_cs()
+                N_react = 2
+                u_cur = u.copy()
+                assert cs[0] == 0, "cs must start with 0"
+                c_cur = cs[0]
+                uForces = {c_cur: u_cur}
+                for c in cs[1:]:
+                    dtI = dtC * (c - c_cur)
+                    for i_react in range(N_react):
+                        u_cur = self.step(
+                            dtI / N_react, u_cur, mode="source", solve_opts=solve_opts
+                        )
+                    c_cur = c
+                    uForces[c_cur] = u_cur.copy()
+                u = self.step(
+                    dtC,
+                    u,
+                    mode="flow",
+                    solve_opts=solve_opts,
+                    uForce=lambda c2: (uForces[c2] - uForces[cs[0]]) / dtC,
+                )
 
             t = tNew
             print(f"Step [{iStep}], t = [{t:.4e}] uNorm [{np.linalg.vector_norm(u)}]")

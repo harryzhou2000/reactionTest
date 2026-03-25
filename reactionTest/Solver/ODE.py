@@ -71,7 +71,18 @@ class ODE_F_SOLVE_SingleStage(ABC):
 
 class ImplicitOdeIntegrator(ABC):
     @abstractmethod
-    def step(self, dt: float, u, fRHS: ODE_F_RHS, fSolve: ODE_F_SOLVE_SingleStage):
+    def step(
+        self,
+        dt: float,
+        u,
+        fRHS: ODE_F_RHS,
+        fSolve: ODE_F_SOLVE_SingleStage,
+        fForce: lambda ct: 0,
+    ):
+        pass
+
+    @abstractmethod
+    def get_cs(self) -> list[float]:
         pass
 
 
@@ -107,7 +118,17 @@ class ESDIRK(ImplicitOdeIntegrator):
         self.rhsSeq = [None for _ in range(self.nStage)]
         self.uSeq = [None for _ in range(self.nStage)]
 
-    def step(self, dt: float, u, fRHS: ODE_F_RHS, fSolve: ODE_F_SOLVE_SingleStage):
+    def get_cs(self):
+        return [c for c in self.butcherC]
+
+    def step(
+        self,
+        dt: float,
+        u,
+        fRHS: ODE_F_RHS,
+        fSolve: ODE_F_SOLVE_SingleStage,
+        fForce: lambda ct: 0,
+    ):
         uLast = u
         for iStage in range(1, self.nStage + 1):
             if iStage == 1:
@@ -118,7 +139,10 @@ class ESDIRK(ImplicitOdeIntegrator):
 
             fRes = uLast * (1 / dt)
             for jStage in range(1, iStage):
-                fRes += self.butcherA[iStage - 1, jStage - 1] * self.rhsSeq[jStage - 1]
+                fRes += self.butcherA[iStage - 1, jStage - 1] * self.rhsSeq[
+                    jStage - 1
+                ]
+            fRes += fForce(self.butcherC[iStage - 1])
             self.uSeq[iStage - 1], self.rhsSeq[iStage - 1] = fSolve(
                 u0=u,
                 dt=dt,
@@ -153,8 +177,18 @@ class DITRExp(ImplicitOdeIntegrator):
             self.d3 = c2**2 - c2
         else:
             raise ValueError()
+        
+    def get_cs(self):
+        return [0, self.c2, 1]
 
-    def step(self, dt: float, u, fRHS: ODE_F_RHS, fSolve: ODE_F_SOLVE_SingleStage):
+    def step(
+        self,
+        dt: float,
+        u,
+        fRHS: ODE_F_RHS,
+        fSolve: ODE_F_SOLVE_SingleStage,
+        fForce: lambda ct: 0,
+    ):
         uLast = u
         umid = uLast.copy()
         u = uLast.copy()
@@ -185,10 +219,10 @@ class DITRExp(ImplicitOdeIntegrator):
         a22 = d1pd3mhA * b2
         a23 = eye * self.d3 + d1pd3mhA * b3
 
-        #TODO: add interface for inverting the matrix
+        # TODO: add interface for inverting the matrix
         a22Invb2 = 1.0 / a22 * b2 * 1 * 1.0
         # a22Invb2 = 0.5
-        
+
         alphas = [
             [a22, a23],
             [
@@ -201,8 +235,8 @@ class DITRExp(ImplicitOdeIntegrator):
 
         # fResMid = uLastBc2 / dt + fRHS.JacobianExpoMult(a21, rhsLast)
         # fRes1 = uLastB1 / dt + fRHS.JacobianExpoMult(b1, rhsLast)
-        fResMid = uLast / dt + fRHS.JacobianExpoMult(a21, rhsLast)
-        fRes1 = uLast / dt + fRHS.JacobianExpoMult(b1, rhsLast)
+        fResMid = uLast / dt + fRHS.JacobianExpoMult(a21, rhsLast) + fForce(self.c2)
+        fRes1 = uLast / dt + fRHS.JacobianExpoMult(b1, rhsLast) + fForce(1)
 
         fRes1 = fRes1 - fRHS.JacobianExpoMult(a22Invb2, fResMid)
 
