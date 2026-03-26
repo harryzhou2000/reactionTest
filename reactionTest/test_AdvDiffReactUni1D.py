@@ -6,138 +6,157 @@ Test: 1D advection-diffusion-reaction with bistable source.
 The diffusion smears the reaction front, creating an internal layer of
 width ~ sqrt(eps/k).  Splitting errors produce observable front speed
 errors -- a clean scalar metric to compare methods.
-
-This script mirrors test_AdvReactUni1D.ipynb but adds viscous diffusion.
 """
 
 import numpy as np
+import pathlib
 import matplotlib.pyplot as plt
 from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
 from Solver.FVUni2nd import FVUni2nd1D
 from Solver.ODE import ESDIRK, DITRExp
 import PlotEnv
 
-# ── Grid and time stepping ──────────────────────────────────────────
-Nx = 128
-CFLt = 2
-dt = 1 / Nx / 2 * 2 * CFLt
-dtRef = 1 / Nx / 2 / 4
-tEnd = 0.5  # shorter than pure-advection test (front doesn't wrap)
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  Problem configuration -- change only this block                 ║
+# ╚══════════════════════════════════════════════════════════════════╝
 
-# ── Physics ─────────────────────────────────────────────────────────
+# Grid
+Nx = 128
+
+# Time stepping
+CFLt = 2                          # CFL multiplier for coarse dt
+dt = 1 / Nx / 2 * 2 * CFLt       # coarse time step
+dtRef = 1 / Nx / 2 / 4           # fine reference time step
+tEnd = 1
+
+# Bistable reaction + diffusion parameters
+a_react = 0.5                    # bistable threshold
+k_react = 1000                   # reaction stiffness
+eps_diff = 1e-3                  # diffusion coefficient
+
+# Solver tuning
+CFL_ref = 1000                    # pseudo-time CFL for reference
+CFL_coarse = 10                   # pseudo-time CFL for coarse runs
+rel_tol = 1e-4
+max_iter_exp = 50                 # max iterations for exponential DITR
+
+# Methods to run (comment out lines to skip)
+enabled_methods = [
+    "ref",
+    "Strang",
+    "fully implicit",
+    "DITR",
+    "Exp DITR",
+    "Embed implicit",
+    "Embed DITR",
+]
+
+# ═══════════════════════════════════════════════════════════════════
+
+# ── Output directory ────────────────────────────────────────────────
+script_dir = pathlib.Path(__file__).resolve().parent
+pic_dir = script_dir / "pics" / "advdiffreact"
+pic_dir.mkdir(parents=True, exist_ok=True)
+
+# ── Setup ───────────────────────────────────────────────────────────
 fv = FVUni2nd1D(nx=Nx)
 ev = AdvReactUni1DEval(
     fv=fv,
     model="bistable",
-    params={"a": 0.5, "k": 1000, "eps": 1e-3},
+    params={"a": a_react, "k": k_react, "eps": eps_diff},
 )
 
-# ── Solvers ─────────────────────────────────────────────────────────
 solver4 = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK4"))
 solver = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK3"))
 solverDITR = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
 
-# ── Initial condition ───────────────────────────────────────────────
+# Initial condition
 u = np.array([np.sin(fv.xcs * np.pi * 2) * 0.5 + 0.5])
 
-# ── Reference (ESDIRK4, fine dt, fully implicit) ───────────────────
-print("=" * 60)
-print("Reference: ESDIRK4, fully implicit, fine dt")
-print("=" * 60)
-u1_ref = solver4.stepInterval(
-    dtRef, u, 0.0, tEnd,
-    mode="full",
-    solve_opts={"CFL": 1000},
-)
+# ── Method registry ────────────────────────────────────────────────
+method_runners = {
+    "ref": lambda: solver4.stepInterval(
+        dtRef, u, 0.0, tEnd, mode="full",
+        solve_opts={"CFL": CFL_ref},
+    ),
+    "Strang": lambda: solver.stepInterval(
+        dt, u, 0.0, tEnd, mode="strang",
+        solve_opts={"CFL": CFL_coarse},
+    ),
+    "Strang DITR": lambda: solverDITR.stepInterval(
+        dt, u, 0.0, tEnd, mode="strang",
+        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+    ),
+    "fully implicit": lambda: solver.stepInterval(
+        dt, u, 0.0, tEnd,
+        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+    ),
+    "DITR": lambda: solverDITR.stepInterval(
+        dt, u, 0.0, tEnd,
+        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse}, use_exp=False,
+    ),
+    "Exp DITR": lambda: solverDITR.stepInterval(
+        dt, u, 0.0, tEnd,
+        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse,
+                    "max_iter": max_iter_exp},
+        use_exp=True,
+    ),
+    "Embed implicit": lambda: solver.stepInterval(
+        dt, u, 0.0, tEnd, mode="embed",
+        solve_opts={"CFL": CFL_coarse},
+    ),
+    "Embed DITR": lambda: solverDITR.stepInterval(
+        dt, u, 0.0, tEnd, mode="embed",
+        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse}, use_exp=False,
+    ),
+}
 
-# ── Strang splitting ────────────────────────────────────────────────
-print("=" * 60)
-print("Strang splitting")
-print("=" * 60)
-u1_strang = solver.stepInterval(
-    dt, u, 0.0, tEnd,
-    mode="strang",
-    solve_opts={"CFL": 10},
-)
+# ── Run selected methods ────────────────────────────────────────────
+results = {}
 
-# ── Fully implicit ESDIRK3 ─────────────────────────────────────────
-print("=" * 60)
-print("Fully implicit ESDIRK3")
-print("=" * 60)
-u1 = solver.stepInterval(
-    dt, u, 0.0, tEnd,
-    solve_opts={"rel_tol": 1e-4, "CFL": 10},
-)
-
-# ── DITR ────────────────────────────────────────────────────────────
-print("=" * 60)
-print("DITR")
-print("=" * 60)
-u1Ditr = solverDITR.stepInterval(
-    dt, u, 0.0, tEnd,
-    solve_opts={"rel_tol": 1e-4, "CFL": 10},
-    use_exp=False,
-)
-
-# ── Exponential DITR ────────────────────────────────────────────────
-print("=" * 60)
-print("Exponential DITR")
-print("=" * 60)
-u1DitrExp = solverDITR.stepInterval(
-    dt, u, 0.0, tEnd,
-    solve_opts={"rel_tol": 1e-4, "CFL": 10, "max_iter": 50},
-    use_exp=True,
-)
-
-# ── Embedded ESDIRK3 ───────────────────────────────────────────────
-print("=" * 60)
-print("Embedded ESDIRK3")
-print("=" * 60)
-u1_embed = solver.stepInterval(
-    dt, u, 0.0, tEnd,
-    mode="embed",
-    solve_opts={"CFL": 10},
-)
-
-# ── Embedded DITR ───────────────────────────────────────────────────
-print("=" * 60)
-print("Embedded DITR")
-print("=" * 60)
-u1DitrEmbed = solverDITR.stepInterval(
-    dt, u, 0.0, tEnd,
-    mode="embed",
-    solve_opts={"rel_tol": 1e-4, "CFL": 10},
-    use_exp=False,
-)
+for name in enabled_methods:
+    runner = method_runners.get(name)
+    if runner is None:
+        print(f"WARNING: unknown method '{name}', skipping")
+        continue
+    print("=" * 60)
+    print(name)
+    print("=" * 60)
+    try:
+        sol = runner()
+        results[name] = sol
+        print(f"  >> {name} completed, uNorm = {np.linalg.norm(sol):.6e}")
+    except Exception as e:
+        print(f"  >> {name} FAILED: {e}")
+        results[name] = None
 
 # ── Plot ────────────────────────────────────────────────────────────
 plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=10)
+tag = f"k{k_react}_eps{eps_diff}_CFL{CFLt}_T{tEnd}"
 
 fig = plotEnv.figure(101, figsize=(6, 4))
-plotEnv.plot(fv.xcs, u1_ref[0], plotIndex=0, label="ref")
-plotEnv.plot(fv.xcs, u1_strang[0], plotIndex=1, label="Strang splitting")
-plotEnv.plot(fv.xcs, u1[0], plotIndex=2, label="fully implicit")
-plotEnv.plot(fv.xcs, u1Ditr[0], plotIndex=3, label="DITR")
-plotEnv.plot(fv.xcs, u1DitrExp[0], plotIndex=4, label="Exponential DITR")
-plotEnv.plot(fv.xcs, u1_embed[0], plotIndex=5, label="Embed implicit")
-plotEnv.plot(fv.xcs, u1DitrEmbed[0], plotIndex=6, label="Embed DITR")
+for i, name in enumerate(enabled_methods):
+    sol = results.get(name)
+    if sol is not None:
+        plotEnv.plot(fv.xcs, sol[0], plotIndex=i, label=name)
 plt.legend()
-plt.title("Advection-Diffusion-Reaction (bistable, eps=1e-3)")
+plt.title(f"Adv-Diff-React  (k={k_react}, eps={eps_diff}, CFL={CFLt})")
 plt.xlabel("x")
 plt.ylabel("u")
-plt.savefig("test_AdvDiffReactUni1D.png", dpi=180, bbox_inches="tight")
+plt.savefig(pic_dir / f"advdiffreact_{tag}.png", dpi=180, bbox_inches="tight")
 plt.show()
 
 # ── Error norms ─────────────────────────────────────────────────────
-print("\n" + "=" * 60)
-print("L2 errors vs reference:")
-for label, sol in [
-    ("Strang splitting", u1_strang),
-    ("Fully implicit", u1),
-    ("DITR", u1Ditr),
-    ("Exponential DITR", u1DitrExp),
-    ("Embed implicit", u1_embed),
-    ("Embed DITR", u1DitrEmbed),
-]:
-    err = np.linalg.norm(sol - u1_ref) / np.linalg.norm(u1_ref)
-    print(f"  {label:25s}: {err:.6e}")
+u1_ref = results.get("ref")
+if u1_ref is not None:
+    print("\n" + "=" * 60)
+    print(f"L2 errors vs reference  (k={k_react}, eps={eps_diff}, CFL={CFLt}, T={tEnd}):")
+    for name in enabled_methods:
+        if name == "ref":
+            continue
+        sol = results.get(name)
+        if sol is not None:
+            err = np.linalg.norm(sol - u1_ref) / np.linalg.norm(u1_ref)
+            print(f"  {name:25s}: {err:.6e}")
+        else:
+            print(f"  {name:25s}: FAILED")

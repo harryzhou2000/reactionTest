@@ -5,7 +5,6 @@ else:
     from .FVUni2nd import FVUni2nd1D
     from . import ODE
 import numpy as np
-import scipy.linalg as spl
 
 
 class AdvReactUni1DEval:
@@ -28,6 +27,14 @@ class AdvReactUni1DEval:
             rhs += -f * 1.0
         rhs /= self.fv.vol
 
+        # Diffusion: eps * u_xx via central difference
+        eps = self.params.get("eps", 0.0)
+        if eps != 0.0:
+            diff = np.zeros_like(u)
+            for nx, dx, (uN,) in self.fv.cellOthers((u,)):
+                diff += uN - u
+            rhs += eps / (self.fv.hx**2) * diff
+
         return rhs
 
     def rhs_flow_jacobian_diag(self, u: np.ndarray):
@@ -42,6 +49,11 @@ class AdvReactUni1DEval:
             rhsJD += -f * 1.0
         rhsJD /= self.fv.vol
 
+        eps = self.params.get("eps", 0.0)
+        if eps != 0.0:
+            nV, nX = self.fv.get_shape_u(u)
+            rhsJD += -2.0 * eps / (self.fv.hx**2)
+
         return rhsJD
 
     def rhs_flow_jacobian_matvec(self, u: np.ndarray, du: np.ndarray):
@@ -54,6 +66,13 @@ class AdvReactUni1DEval:
             df = 0.5 * an * (duRec + duRecN) - 0.5 * abs(an) * (duRecN - duRec)
             drhs += -df * 1.0
         drhs /= self.fv.vol
+
+        eps = self.params.get("eps", 0.0)
+        if eps != 0.0:
+            ddiff = np.zeros_like(du)
+            for nx, dx, (duN,) in self.fv.cellOthers((du,)):
+                ddiff += duN - du
+            drhs += eps / (self.fv.hx**2) * ddiff
 
         return drhs
 
@@ -72,6 +91,13 @@ class AdvReactUni1DEval:
             an = self.ax * nx
             df = 0.5 * an * (duRecN) - 0.5 * abs(an) * (duRecN)
             duNew += -alphaDiag * df * 1.0 / self.fv.vol
+
+        # Diffusion off-diagonal Jacobi contribution
+        eps = self.params.get("eps", 0.0)
+        if eps != 0.0:
+            for nx, dx, (duN,) in self.fv.cellOthers((du,)):
+                duNew += alphaDiag * eps / (self.fv.hx**2) * duN
+
         duNew = self.jacobian_diag_mult(rhsJDInv, duNew)
         return duNew
 
@@ -90,39 +116,17 @@ class AdvReactUni1DEval:
             an = self.ax * nx
             df = 0.5 * an * (duRecN) - 0.5 * abs(an) * (duRecN)
             duNew += -df * 1.0 / self.fv.vol
+
+        # Diffusion off-diagonal Jacobi contribution
+        eps = self.params.get("eps", 0.0)
+        if eps != 0.0:
+            for nx, dx, (duN,) in self.fv.cellOthers((du,)):
+                duNew += eps / (self.fv.hx**2) * duN
+
         duNew = self.jacobian_diag_mult(alphaDiag, duNew)
         duNew += res
         duNew = self.jacobian_diag_mult(rhsJDInv, duNew)
         return duNew
-
-    def rhs_diffusion(self, u: np.ndarray):
-        eps = self.params.get("eps", 0.0)
-        if eps == 0.0:
-            return 0 * u
-        # Central difference Laplacian: (u_{i-1} - 2u_i + u_{i+1}) / dx^2
-        rhs = np.zeros_like(u)
-        for nx, dx, (uN,) in self.fv.cellOthers((u,)):
-            rhs += uN - u
-        rhs *= eps / (self.fv.hx**2)
-        return rhs
-
-    def rhs_diffusion_jacobian_diag(self, u: np.ndarray):
-        eps = self.params.get("eps", 0.0)
-        if eps == 0.0:
-            return 0 * u
-        # d(rhs)/du_i = -2 * eps / dx^2 (from the -2u_i term)
-        nVars, nx = self.fv.get_shape_u(u)
-        return np.full((nVars, nx), -2.0 * eps / (self.fv.hx**2))
-
-    def rhs_diffusion_jacobian_matvec(self, u: np.ndarray, du: np.ndarray):
-        eps = self.params.get("eps", 0.0)
-        if eps == 0.0:
-            return 0 * du
-        drhs = np.zeros_like(du)
-        for nx, dx, (duN,) in self.fv.cellOthers((du,)):
-            drhs += duN - du
-        drhs *= eps / (self.fv.hx**2)
-        return drhs
 
     def rhs_source(self, u: np.ndarray):
         if self.model == "bistable":
@@ -222,9 +226,9 @@ class AdvReactUni1DSolver:
 
             def __call__(self, u, cStage, iStage):
                 if self.mode == "full":
-                    return self.eval.rhs_flow(u) + self.eval.rhs_diffusion(u) + self.eval.rhs_source(u)
+                    return self.eval.rhs_flow(u) + self.eval.rhs_source(u)
                 elif self.mode == "flow":
-                    return self.eval.rhs_flow(u) + self.eval.rhs_diffusion(u)
+                    return self.eval.rhs_flow(u)
                 elif self.mode == "source":
                     return self.eval.rhs_source(u)
                 else:
@@ -274,7 +278,6 @@ class AdvReactUni1DSolver:
                     du = np.zeros_like(u)
                     if self.mode == "full":
                         JDFlow = -alphaRHS * self.eval.rhs_flow_jacobian_diag(u)
-                        JDFlow += -alphaRHS * self.eval.rhs_diffusion_jacobian_diag(u)
                         JDFlow += 1 / (dTau) + 1 / dt
                         # JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
                         JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
@@ -287,7 +290,6 @@ class AdvReactUni1DSolver:
                             )
                     elif self.mode == "flow":
                         JDFlow = -alphaRHS * self.eval.rhs_flow_jacobian_diag(u)
-                        JDFlow += -alphaRHS * self.eval.rhs_diffusion_jacobian_diag(u)
                         JDFlow += 1 / (dTau) + 1 / dt
                         JDFlow_inv = self.eval.invert_jacobian_diag(JDFlow)
 
@@ -299,7 +301,9 @@ class AdvReactUni1DSolver:
                         JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
                         if JDSource.ndim == 3:
                             nV = JDSource.shape[0]
-                            eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDSource.shape[2]))
+                            eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones(
+                                (1, 1, JDSource.shape[2])
+                            )
                             JDSource += (1 / (dTau) + 1 / dt) * eyeNx
                         else:
                             JDSource += 1 / (dTau) + 1 / dt
@@ -350,23 +354,63 @@ class AdvReactUni1DSolver:
                     self.currentA = (
                         np.minimum(JDSource, np.abs(JDSource).max() * -1e-4) * 1
                     )
+                    self._eigV = None  # not used for ndim==2
+                    self._eigVinv = None
+                    self._eigvals = None
                     return self.currentA
                 elif JDSource.ndim == 3:
                     # Per-point dense matrix: shape (nVars, nVars, nx)
-                    # Eigendecompose, clamp eigenvalue real parts to strictly
-                    # negative, then reconstruct.  This keeps the eigenvector
-                    # structure intact while guaranteeing exp(A*dt) decays.
+                    # Eigendecompose and extract decaying portion.
+                    # Store eigenbasis for reuse in exp/phi computations.
                     nVars, _, nx = JDSource.shape
                     Jt = np.moveaxis(JDSource, (0, 1), (-2, -1))  # (nx, nV, nV)
-                    At = np.empty_like(Jt)
-                    maxAbsEig = max(np.abs(np.linalg.eigvals(Jt)).max(), 1e-30)
-                    eps_shift = maxAbsEig * 1e-4
+
+                    # --- Eigenvalue treatment strategy ---
+                    # "complex": keep complex eigenvalues, project out Re>=0
+                    # "real":    drop imaginary parts first, then project out >=0
+                    # expo_eig_mode = "real"
+                    expo_eig_mode = "complex"
+
+                    # Batch eigendecomposition
+                    Vt = np.empty((nx, nVars, nVars), dtype=complex)
+                    Vinvt = np.empty_like(Vt)
+                    kept = np.empty((nx, nVars), dtype=complex)
                     for ix in range(nx):
-                        eigvals, V = np.linalg.eig(Jt[ix])
-                        # Clamp: keep imaginary part, force real part <= -eps
-                        clamped = eigvals.copy()
-                        clamped.real = np.minimum(eigvals.real, -eps_shift)
-                        At[ix] = (V @ np.diag(clamped) @ np.linalg.inv(V)).real
+                        eigvals_ix, V_ix = np.linalg.eig(Jt[ix])
+
+                        if expo_eig_mode == "real":
+                            # Drop imaginary parts: use only the decay rate.
+                            # For a conjugate pair a +/- bi, both collapse to a,
+                            # so A degenerates to a*I in that subspace -- the
+                            # oscillatory direction is removed, leaving only the
+                            # physical decay rate for the exponential integrator.
+                            proj = eigvals_ix.real.copy()
+                            proj[proj >= 0] = 0.0
+                            kept[ix] = proj
+                        else:  # "complex"
+                            # Keep complex eigenvalues, project out Re>=0
+                            proj = eigvals_ix.copy()
+                            proj[eigvals_ix.real >= 0] = 0.0
+                            kept[ix] = proj
+
+                        Vt[ix] = V_ix
+                        Vinvt[ix] = np.linalg.inv(V_ix)
+
+                    # Alternative: clamp instead of project (uncomment to use)
+                    # maxAbsEig = max(np.abs(kept).max(), 1e-30)
+                    # eps_shift = maxAbsEig * 1e-4
+                    # for ix in range(nx):
+                    #     kept[ix].real = np.minimum(kept[ix].real, -eps_shift)
+
+                    # Reconstruct A = V @ diag(kept) @ V^{-1}  (real)
+                    At = np.empty_like(Jt)
+                    for ix in range(nx):
+                        At[ix] = (Vt[ix] @ np.diag(kept[ix]) @ Vinvt[ix]).real
+
+                    # Store eigenbasis (nVars, nVars, nx) and (nVars, nx) layout
+                    self._eigV = np.moveaxis(Vt, (-2, -1), (0, 1))       # (nV, nV, nx) complex
+                    self._eigVinv = np.moveaxis(Vinvt, (-2, -1), (0, 1)) # (nV, nV, nx) complex
+                    self._eigvals = np.moveaxis(kept, -1, 0)             # (nV, nx) complex
                     self.currentA = np.moveaxis(At, (-2, -1), (0, 1))
                     return self.currentA
 
@@ -386,19 +430,32 @@ class AdvReactUni1DSolver:
                     return np.einsum("ij...,jk...->ik...", JExpo, u)
                 return JExpo * u
 
+            def _reconstruct_from_eigvals(self, scalar_per_eigval):
+                """Reconstruct (nVars, nVars, nx) real matrix from per-eigenvalue
+                scalar function values.
+
+                Args:
+                    scalar_per_eigval: (nVars, nx) complex array of f(lambda_i)
+                        for each eigenvalue at each spatial point.
+
+                Returns:
+                    (nVars, nVars, nx) real array:  V @ diag(f(lambda)) @ V^{-1}
+                """
+                # V: (nV, nV, nx), scalar_per_eigval: (nV, nx)
+                # diag broadcast: V[:,j,ix] * scalar[j,ix] then @ Vinv
+                # = einsum("ij...,j...,jk...->ik...", V, s, Vinv)
+                Vs = self._eigV * scalar_per_eigval[np.newaxis, :, :]  # (nV, nV, nx)
+                result = np.einsum("ij...,jk...->ik...", Vs, self._eigVinv)
+                return result.real
+
             def JacobianExpoExp(self, u, dt, cStage, iStage):
                 if self.currentA.ndim == 2:
                     Ah = self.currentA * dt
                     return np.exp(Ah)
                 elif self.currentA.ndim == 3:
-                    nVars, _, nx = self.currentA.shape
-                    Ah = self.currentA * dt
-                    # (nx, nVars, nVars) batch matrix exponential
-                    Aht = np.moveaxis(Ah, (0, 1), (-2, -1))
-                    expAht = np.zeros_like(Aht)
-                    for ix in range(nx):
-                        expAht[ix] = spl.expm(Aht[ix])
-                    return np.moveaxis(expAht, (-2, -1), (0, 1))
+                    # exp(A*dt) via eigenbasis: V @ diag(exp(lambda_i * dt)) @ V^{-1}
+                    zh = self._eigvals * dt  # (nVars, nx) complex
+                    return self._reconstruct_from_eigvals(np.exp(zh))
 
             def JacobianExpoPhikSeq(self, u, dt, k_max, cStage, iStage):
                 if self.currentA.ndim == 2:
@@ -412,34 +469,33 @@ class AdvReactUni1DSolver:
                         ret[-1][ifFix] = ODE.expo_quad_phik0(k + 1)
                     return ret
                 elif self.currentA.ndim == 3:
-                    nVars, _, nx = self.currentA.shape
-                    Ah = self.currentA * dt
-                    Aht = np.moveaxis(Ah, (0, 1), (-2, -1))  # (nx, nV, nV)
-                    eye = np.eye(nVars)
+                    # Compute scalar phi_k(z_i) for each eigenvalue z_i = lambda_i * dt,
+                    # then reconstruct matrix phi_k via eigenbasis.
+                    # This avoids matrix inverse of A*dt entirely.
+                    nVars, nx = self._eigvals.shape
+                    zh = self._eigvals * dt  # (nVars, nx) complex
 
-                    # Check for small norm to use Taylor fallback
-                    AhNorms = np.linalg.norm(Aht, axis=(-2, -1))  # (nx,)
-                    ifFix = AhNorms < 1e-3
+                    # Scalar phi sequence per eigenvalue
+                    tol = 1e-6
+                    small = np.abs(zh) < tol
+                    # Safe inverse: use 1.0 for small entries (overwritten by Taylor)
+                    zh_safe = np.where(small, 1.0, zh)
+                    zh_inv = 1.0 / zh_safe
+                    exp_zh = np.exp(zh)
 
-                    AhInv = self.eval.invert_jacobian_diag(Ah)  # (nV, nV, nx)
-
-                    ret = [self.JacobianExpoExp(u, dt, cStage, iStage)]
-                    # Fix small-norm points
-                    eyeBC = np.eye(nVars).reshape(nVars, nVars, 1) * np.ones((1, 1, nx))
-                    for ix in np.where(ifFix)[0]:
-                        ret[0][:, :, ix] = ODE.expo_quad_phik0(0) * eye
-
+                    # phi_0 = exp(z)
+                    phi_scalars = [exp_zh.copy()]
+                    phi_scalars[0][small] = ODE.expo_quad_phik0(0)
                     for k in range(k_max):
-                        phik0_eye = ODE.expo_quad_phik0(k) * eyeBC
-                        next_phi = self._matmul3d(AhInv, ret[k] - phik0_eye)
-                        for ix in np.where(ifFix)[0]:
-                            next_phi[:, :, ix] = ODE.expo_quad_phik0(k + 1) * eye
-                        ret.append(next_phi)
-                    return ret
+                        next_phi = zh_inv * (phi_scalars[k] - ODE.expo_quad_phik0(k))
+                        next_phi[small] = ODE.expo_quad_phik0(k + 1)
+                        phi_scalars.append(next_phi)
 
-            def _matmul3d(self, A, B):
-                """Batch multiply two (nVars, nVars, nx) matrices."""
-                return np.einsum("ij...,jk...->ik...", A, B)
+                    # Reconstruct matrix phi_k = V @ diag(phi_k(z_i)) @ V^{-1}
+                    ret = []
+                    for phi_s in phi_scalars:
+                        ret.append(self._reconstruct_from_eigvals(phi_s))
+                    return ret
 
             def __call__(self, u, cStage, iStage):
                 return super().__call__(u, cStage, iStage) - self.JacobianExpoMult(
@@ -515,14 +571,13 @@ class AdvReactUni1DSolver:
                             JDFlow = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
                             )
-                            JDFlow += -fRHS.JacobianExpoMult(
-                                alphaRHSDiag, self.eval.rhs_diffusion_jacobian_diag(u)
-                            )
 
                             scalarDiag = 1 / (dTau) + 1 / dt
                             if JDFlow.ndim == 3:
                                 nV = JDFlow.shape[0]
-                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones(
+                                    (1, 1, JDFlow.shape[2])
+                                )
                                 JDFlow += scalarDiag * eyeNx
                             else:
                                 JDFlow += scalarDiag
@@ -543,14 +598,13 @@ class AdvReactUni1DSolver:
                             JDFlow = -fRHS.JacobianExpoMult(
                                 alphaRHSDiag, self.eval.rhs_flow_jacobian_diag(u)
                             )
-                            JDFlow += -fRHS.JacobianExpoMult(
-                                alphaRHSDiag, self.eval.rhs_diffusion_jacobian_diag(u)
-                            )
 
                             scalarDiag = 1 / (dTau) + 1 / dt
                             if JDFlow.ndim == 3:
                                 nV = JDFlow.shape[0]
-                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones(
+                                    (1, 1, JDFlow.shape[2])
+                                )
                                 JDFlow += scalarDiag * eyeNx
                             else:
                                 JDFlow += scalarDiag
@@ -567,7 +621,9 @@ class AdvReactUni1DSolver:
                             scalarDiag = 1 / (dTau) + 1 / dt
                             if JDFlow.ndim == 3:
                                 nV = JDFlow.shape[0]
-                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones((1, 1, JDFlow.shape[2]))
+                                eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones(
+                                    (1, 1, JDFlow.shape[2])
+                                )
                                 JDFlow += scalarDiag * eyeNx
                             else:
                                 JDFlow += scalarDiag
