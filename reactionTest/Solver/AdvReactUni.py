@@ -317,10 +317,14 @@ class AdvReactUni1DSolver:
         Returns:
             If x is specified: dict with "t" (times) and "u" (values array).
             If x is None: dict mapping each probe x to its data.
+            Always returns a deep copy so callers are not affected by
+            subsequent clear_probes() calls.
         """
+        import copy
         if x is not None:
-            return self._probe_data.get(x, None)
-        return self._probe_data
+            data = self._probe_data.get(x, None)
+            return copy.deepcopy(data)
+        return copy.deepcopy(self._probe_data)
 
     def step(
         self,
