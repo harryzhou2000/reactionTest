@@ -134,7 +134,7 @@ ode = ODE.DITRExp()
 
 # u1 = ode.step(1.0, u0, fRHS=Frhs(), fSolve=FsolveDITR())
 
-u1 = ode.step(1.0, u0, fRHS=FrhsDITRExp(), fSolve=FsolveDITR())
+u1 = ode.step(1.0, u0, fRHS=FrhsDITRExp(), fSolve=FsolveDITR(), fForce=lambda ct: 0)
 
 
 print(f"{np.exp(-1.0)} --- {np.exp(-1e-3)}")

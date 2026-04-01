@@ -1,13 +1,19 @@
 """
-Test: 1D advection + Brusselator reaction (2-species system).
+Test: 1D diffusion-reaction with premixed combustion model (no advection).
 
-    u_t + a u_x = k * (A - (B+1)*u + u^2 * v)
-    v_t + a v_x = k * (B*u - u^2 * v)
+    T_t = eps_T * T_xx + Q * omega
+    Y_t = eps_Y * Y_xx - omega
 
-The Brusselator has a limit cycle for B > 1 + A^2, producing persistent
-oscillatory structure where splitting errors accumulate.  The source
-Jacobian is a dense 2x2 matrix per point, exercising the ndim==3 code
-paths in the exponential integrator.
+    omega = B * Y * exp(-Ze * (Tb / T - 1))
+
+where Ze = E/(R*Tb) is the Zeldovich number.
+
+Initial condition: tanh jump from unburnt (left) to burnt (right).
+    Left:  T = T0,      Y = 1
+    Right: T = T0 + Q,  Y = 0
+with Q = Q_div_rho_cp, T0 = Tb - Q.
+
+Dirichlet BCs matching the left/right initial states.
 """
 
 import numpy as np
@@ -19,38 +25,51 @@ from Solver.ODE import ESDIRK, DITRExp
 import PlotEnv
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  Problem configuration -- change only this block               ║
+# ║  Problem configuration                                         ║
 # ╚══════════════════════════════════════════════════════════════════╝
 
 # Grid
-Nx = 128
+Nx = 256
+
+Da = 1e2
+
+# Initial jump parameters
+x_jump = 0.5            # jump center location
+delta_jump = 0.05       # characteristic width of tanh jump
+
+# Diffusion coefficients (per component: [T, Y])
+eps_T = 1e-1
+eps_Y = 1e-1
+
+# Premixed combustion parameters
+Q = 0.9                 # heat release (temperature rise)
+Tb = 1.0                # burnt temperature
+Ze = 14.0                # Zeldovich number E/(R*Tb)
+B_react = Da * eps_Y / delta_jump ** 2  # pre-exponential factor (reaction time scale)
+T0 = Tb - Q             # unburnt temperature
+
+print(f"tau diff { delta_jump ** 2 / eps_Y:.4e}")
+print(f"tau reac {1 / B_react:.4e}")
+
 
 # Time stepping
-CFLt = 1  # CFL multiplier for coarse dt
-dt = 1 / Nx / 2 * 2 * CFLt  # coarse time step
-dtRef = 1 / Nx / 2 / 4  # fine reference time step
-tEnd = 4.0
-
-# Brusselator parameters  (limit cycle when B > 1 + A^2)
-A_br = 1.0
-B_br = 3.0
-k_br = 50
+dt = 5e-3
+dtRef = 1e-4
+tEnd = 50e-3
 
 # Solver tuning
-CFL_ref = 1000  # pseudo-time CFL for reference
-CFL_coarse = 10  # pseudo-time CFL for coarse runs
+CFL_ref = 1000
+CFL_coarse = 100
 rel_tol = 1e-4
-max_iter_exp = 50  # max iterations for exponential DITR
 
-# Methods to run (comment out lines to skip)
+# Methods to run
 enabled_methods = [
     "ref",
+    "fully implicit",
     "Strang",
-    "Strang DITR",
-    # "fully implicit",
     "DITR",
-    "Exp DITR",
-    # "Embed implicit",
+    "Strang DITR",
+    # "Exp DITR",
     # "Embed DITR",
 ]
 
@@ -58,34 +77,50 @@ enabled_methods = [
 
 # ── Output directory ────────────────────────────────────────────────
 script_dir = pathlib.Path(__file__).resolve().parent
-pic_dir = script_dir / "pics" / "brusselator"
+pic_dir = script_dir / "pics" / "premixed"
 pic_dir.mkdir(parents=True, exist_ok=True)
 
 # ── Setup ───────────────────────────────────────────────────────────
 fv = FVUni2nd1D(nx=Nx)
+
+# Dirichlet BCs: left = unburnt, right = burnt
+bcL = np.array([T0, 1.0])      # [T_unburnt, Y_unburnt]
+bcR = np.array([T0 + Q, 0.0])  # [T_burnt,   Y_burnt]
+fv.set_bc_dirichlet(uL=bcL, uR=bcR)
+
 ev = AdvReactUni1DEval(
     fv=fv,
-    model="brusselator",
-    params={"A": A_br, "B": B_br, "k": k_br},
+    model="premixed",
+    params={
+        "B": B_react,
+        "Q_div_rho_cp": Q,
+        "Tb": Tb,
+        "E_div_RTb": Ze,
+        "eps": [eps_T, eps_Y],
+    },
+    nVars=2,
 )
+ev.ax = 0.0  # no advection
 
 solver4 = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK4"))
 solver = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK3"))
 solverDITR = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
 
-# Set up probes at x=0 and x=0.5 for all solvers
-probe_locations = [0.0, 0.5]
+# Set up probes
+probe_locations = [0.5]
 solver4.set_probes(probe_locations)
 solver.set_probes(probe_locations)
 solverDITR.set_probes(probe_locations)
 
-# Initial condition: perturbation of steady state (u_ss=A, v_ss=B/A)
-u0_u = A_br + 0.5 * np.sin(fv.xcs * np.pi * 2)
-u0_v = B_br / A_br + 0.5 * np.cos(fv.xcs * np.pi * 2)
-u0 = np.array([u0_u, u0_v])
+# ── Initial condition: tanh jump ────────────────────────────────────
+xi = (fv.xcs - x_jump) / delta_jump
+phi = 0.5 * (1.0 + np.tanh(xi))  # 0 on left, 1 on right
+
+T_init = T0 + Q * phi
+Y_init = 1.0 - phi
+u0 = np.array([T_init, Y_init])
 
 # ── Method registry ────────────────────────────────────────────────
-# Each entry: (runner_function, solver_instance)
 method_runners = {
     "ref": (
         lambda: solver4.stepInterval(
@@ -99,6 +134,18 @@ method_runners = {
         ),
         solver4,
     ),
+    "fully implicit": (
+        lambda: solver.stepInterval(
+            dt,
+            u0,
+            0.0,
+            tEnd,
+            mode="full",
+            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+            record_probes=True,
+        ),
+        solver,
+    ),
     "Strang": (
         lambda: solver.stepInterval(
             dt,
@@ -110,6 +157,19 @@ method_runners = {
             record_probes=True,
         ),
         solver,
+    ),
+    "DITR": (
+        lambda: solverDITR.stepInterval(
+            dt,
+            u0,
+            0.0,
+            tEnd,
+            mode="full",
+            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+            use_exp=False,
+            record_probes=True,
+        ),
+        solverDITR,
     ),
     "Strang DITR": (
         lambda: solverDITR.stepInterval(
@@ -123,56 +183,18 @@ method_runners = {
         ),
         solverDITR,
     ),
-    "fully implicit": (
-        lambda: solver.stepInterval(
-            dt,
-            u0,
-            0.0,
-            tEnd,
-            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-            record_probes=True,
-        ),
-        solver,
-    ),
-    "DITR": (
-        lambda: solverDITR.stepInterval(
-            dt,
-            u0,
-            0.0,
-            tEnd,
-            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-            use_exp=False,
-            record_probes=True,
-        ),
-        solverDITR,
-    ),
     "Exp DITR": (
         lambda: solverDITR.stepInterval(
             dt,
             u0,
             0.0,
             tEnd,
-            solve_opts={
-                "rel_tol": rel_tol,
-                "CFL": CFL_coarse,
-                "max_iter": max_iter_exp,
-            },
+            mode="full",
+            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse, "max_iter": 50},
             use_exp=True,
             record_probes=True,
         ),
         solverDITR,
-    ),
-    "Embed implicit": (
-        lambda: solver.stepInterval(
-            dt,
-            u0,
-            0.0,
-            tEnd,
-            mode="embed",
-            solve_opts={"CFL": CFL_coarse},
-            record_probes=True,
-        ),
-        solver,
     ),
     "Embed DITR": (
         lambda: solverDITR.stepInterval(
@@ -191,7 +213,7 @@ method_runners = {
 
 # ── Run selected methods ────────────────────────────────────────────
 results = {}
-probe_results = {}  # Store probe data for each method
+probe_results = {}
 
 for name in enabled_methods:
     entry = method_runners.get(name)
@@ -199,7 +221,6 @@ for name in enabled_methods:
         print(f"WARNING: unknown method '{name}', skipping")
         continue
     runner, solver_inst = entry
-    # Clear probe data before each run
     solver_inst.clear_probes()
     print("=" * 60)
     print(name)
@@ -207,49 +228,50 @@ for name in enabled_methods:
     try:
         sol = runner()
         results[name] = sol
-        # Store probe data
         probe_results[name] = solver_inst.get_probe_data()
         print(f"  >> {name} completed, uNorm = {np.linalg.norm(sol):.6e}")
     except Exception as e:
         print(f"  >> {name} FAILED: {e}")
+        import traceback
+        traceback.print_exc()
         results[name] = None
         probe_results[name] = None
 
-# ── Plot ────────────────────────────────────────────────────────────
-plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=10)
-tag = f"k{k_br}_CFL{CFLt}_T{tEnd}"
+# ── Plot spatial profiles ───────────────────────────────────────────
+plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=max(1, Nx // 20))
+tag = f"Ze{Ze:.2g}_B{B_react:.2g}_eps{eps_T:.2g}_T{tEnd:.2g}"
 
-# Species u
+# Temperature
 fig = plotEnv.figure(201, figsize=(6, 4))
 for i, name in enumerate(enabled_methods):
     sol = results.get(name)
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[0], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Brusselator u  (k={k_br}, CFL={CFLt}, T={tEnd})")
+plt.title(f"Premixed T  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})")
 plt.xlabel("x")
-plt.ylabel("u")
-plt.savefig(pic_dir / f"brusselator_u_{tag}.png", dpi=180, bbox_inches="tight")
+plt.ylabel("T")
+plt.savefig(pic_dir / f"premixed_T_{tag}.png", dpi=180, bbox_inches="tight")
 plt.show()
 
-# Species v
+# Fuel fraction
 fig = plotEnv.figure(202, figsize=(6, 4))
 for i, name in enumerate(enabled_methods):
     sol = results.get(name)
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[1], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Brusselator v  (k={k_br}, CFL={CFLt}, T={tEnd})")
+plt.title(f"Premixed Y  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})")
 plt.xlabel("x")
-plt.ylabel("v")
-plt.savefig(pic_dir / f"brusselator_v_{tag}.png", dpi=180, bbox_inches="tight")
+plt.ylabel("Y")
+plt.savefig(pic_dir / f"premixed_Y_{tag}.png", dpi=180, bbox_inches="tight")
 plt.show()
 
 # ── Error norms ─────────────────────────────────────────────────────
 u1_ref = results.get("ref")
 if u1_ref is not None:
     print("\n" + "=" * 60)
-    print(f"L2 errors vs reference  (k={k_br}, CFL={CFLt}, T={tEnd}):")
+    print(f"L2 errors vs reference  (Ze={Ze}, B={B_react}, T={tEnd}):")
     for name in enabled_methods:
         if name == "ref":
             continue
@@ -262,7 +284,7 @@ if u1_ref is not None:
 
 # ── Probe time series plots ─────────────────────────────────────────
 for x_probe in probe_locations:
-    # Species u at probe location
+    # Temperature at probe
     fig = plotEnv.figure(300 + int(x_probe * 100), figsize=(6, 4))
     for i, name in enumerate(enabled_methods):
         pdata = probe_results.get(name)
@@ -271,15 +293,16 @@ for x_probe in probe_locations:
             u_arr = np.array(pdata[x_probe]["u"])
             plotEnv.plot(t_arr, u_arr[:, 0], plotIndex=i, label=name)
     plt.legend()
-    plt.title(f"Brusselator u at x={x_probe}  (k={k_br}, CFL={CFLt})")
+    plt.title(f"T at x={x_probe:.2f}")
     plt.xlabel("t")
-    plt.ylabel("u")
+    plt.ylabel("T")
     plt.savefig(
-        pic_dir / f"brusselator_u_x{x_probe}_{tag}.png", dpi=180, bbox_inches="tight"
+        pic_dir / f"premixed_T_x{x_probe}_{tag}.png",
+        dpi=180, bbox_inches="tight",
     )
     plt.show()
 
-    # Species v at probe location
+    # Fuel fraction at probe
     fig = plotEnv.figure(400 + int(x_probe * 100), figsize=(6, 4))
     for i, name in enumerate(enabled_methods):
         pdata = probe_results.get(name)
@@ -288,10 +311,11 @@ for x_probe in probe_locations:
             u_arr = np.array(pdata[x_probe]["u"])
             plotEnv.plot(t_arr, u_arr[:, 1], plotIndex=i, label=name)
     plt.legend()
-    plt.title(f"Brusselator v at x={x_probe}  (k={k_br}, CFL={CFLt})")
+    plt.title(f"Y at x={x_probe:.2f}")
     plt.xlabel("t")
-    plt.ylabel("v")
+    plt.ylabel("Y")
     plt.savefig(
-        pic_dir / f"brusselator_v_x{x_probe}_{tag}.png", dpi=180, bbox_inches="tight"
+        pic_dir / f"premixed_Y_x{x_probe}_{tag}.png",
+        dpi=180, bbox_inches="tight",
     )
     plt.show()

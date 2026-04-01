@@ -9,12 +9,55 @@ class FVUni2nd1D:
         self.nx = nx
         self.vol = self.hx
 
-    def cellOthers(self, us: list[np.ndarray]):
-        uN = [np.roll(u, 1, axis=-1) for u in us]
-        yield -1, -self.hx, uN
+        # Boundary conditions: None = periodic (default)
+        # Set via set_bc_dirichlet(uL, uR) where uL, uR are (nVars,) arrays.
+        self.bcL = None  # (nVars,) or None
+        self.bcR = None  # (nVars,) or None
 
-        uN = [np.roll(u, -1, axis=-1) for u in us]
-        yield 1, self.hx, uN
+    def set_bc_dirichlet(self, uL: np.ndarray, uR: np.ndarray):
+        """Set Dirichlet boundary values at left and right faces.
+
+        Args:
+            uL: Left boundary value, shape (nVars,).
+            uR: Right boundary value, shape (nVars,).
+        """
+        self.bcL = np.asarray(uL, dtype=float)
+        self.bcR = np.asarray(uR, dtype=float)
+
+    def cellOthers(self, us: list[np.ndarray], homogeneous: bool = False):
+        if self.bcL is None:
+            # Periodic BC (original behavior)
+            uN = [np.roll(u, 1, axis=-1) for u in us]
+            yield -1, -self.hx, uN
+
+            uN = [np.roll(u, -1, axis=-1) for u in us]
+            yield 1, self.hx, uN
+        else:
+            # Dirichlet BC: replace rolled boundary values with ghost values
+            # homogeneous=True: zero boundary ghost (for du corrections)
+            # homogeneous=False: use bcL/bcR (for u evaluation)
+
+            # Left neighbor (nx=-1): roll +1 wraps cell[-1] into position [0]
+            uN = [np.roll(u, 1, axis=-1) for u in us]
+            for uNi in uN:
+                if homogeneous:
+                    uNi[..., 0] = 0.0
+                elif uNi.ndim == 2:
+                    uNi[:, 0] = self.bcL
+                else:
+                    uNi[..., 0] = 0.0  # zero ghost gradient
+            yield -1, -self.hx, uN
+
+            # Right neighbor (nx=+1): roll -1 wraps cell[0] into position [-1]
+            uN = [np.roll(u, -1, axis=-1) for u in us]
+            for uNi in uN:
+                if homogeneous:
+                    uNi[..., -1] = 0.0
+                elif uNi.ndim == 2:
+                    uNi[:, -1] = self.bcR
+                else:
+                    uNi[..., -1] = 0.0  # zero ghost gradient
+            yield 1, self.hx, uN
 
     def get_shape_u(self, u):
         nVars = u.shape[0]

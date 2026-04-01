@@ -21,7 +21,8 @@ reactionTest/               # Main Python package (working directory for scripts
   PlotEnv.py                # Matplotlib plotting utilities (scienceplots styles)
   Solver/                   # Core solver subpackage
     __init__.py
-    AdvReactUni.py          # Advection-reaction evaluator + solver (557 lines)
+    AdvReactUni.py          # Advection-reaction evaluator + solver (~390 lines)
+    AdvReactUniFunctors.py  # Functor classes (Frhs, Fsolve, FrhsDITRExp, FsolveDITR)
     ESDIRK_Data.py          # Butcher tableau coefficients for ESDIRK methods
     FVUni2nd.py             # 2nd-order finite volume discretization on uniform 1D grid
     ODE.py                  # ODE integrator framework (ESDIRK, DITRExp) + ABCs
@@ -29,6 +30,7 @@ reactionTest/               # Main Python package (working directory for scripts
   test_AdvReactUni1D.py     # Script test for advection-reaction solver
   test_AdvReactUni1D.ipynb  # PRIMARY test: bistable reaction, all 7 method variants
   test_AdvReactUni1D_DITR.ipynb  # DITRExp long-time pure advection test
+  test_BrusselatorUni1D.py  # Brusselator 2-species test with probe time series
 ```
 
 ## Running Tests
@@ -72,6 +74,16 @@ Three splitting modes exist in `stepInterval()`:
 - `"strang"` -- classical Strang operator splitting (half-flow, source, half-flow).
 - `"embed"` -- embedded splitting: source sub-steps at each RK stage node,
   flow solved implicitly with forcing correction.
+
+### Probe Recording
+
+`AdvReactUni1DSolver` supports recording time series at specified spatial
+locations via the probe API:
+
+- `set_probes(x_locations)` -- set probe locations (mapped to nearest cell center).
+- `clear_probes()` -- clear recorded data for all probes.
+- `get_probe_data(x=None)` -- retrieve recorded data; returns dict with `"t"` and `"u"`.
+- `stepInterval(..., record_probes=True)` -- enable recording during time integration.
 
 ### Exponential Jacobian Abstraction
 
@@ -184,7 +196,7 @@ prioritizes mathematical readability over PEP 8 strict naming.
 ## Common Pitfalls
 
 - Scripts must run from `reactionTest/` directory, not the repo root.
-- `AdvReactUni.py` is 557 lines with deeply nested inner classes -- read carefully
+- `AdvReactUni.py` has deeply nested inner classes -- read carefully
   before modifying.
 - The `DITRExp` solver passes lists of arrays and nested alpha coefficient lists
   to `fSolve` -- the interface differs from `ESDIRK`'s scalar `alphaRHS`.
