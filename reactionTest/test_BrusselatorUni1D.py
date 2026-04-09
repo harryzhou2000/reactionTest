@@ -23,6 +23,7 @@ import TestCommon as TC
 Nx = 128
 rec_scheme = "weno5z"  # "muscl2" or "weno5z"
 fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
+show_title = False  # show titles on plots
 
 # Time stepping
 CFLt = 1  # CFL multiplier for coarse dt
@@ -37,7 +38,7 @@ k_br = 50
 
 # Solver tuning
 CFL_ref = 1000  # pseudo-time CFL for reference
-CFL_coarse = 10  # pseudo-time CFL for coarse runs
+CFL_coarse = 5  # pseudo-time CFL for coarse runs
 rel_tol = 1e-4
 max_iter_exp = 50  # max iterations for exponential DITR
 ref_suffix = " p-source"  # "" = base evaluator, " p-source" = quadrature source for ref
@@ -50,10 +51,10 @@ enabled_methods = [
     "DITR U2R1",
     "ESDIRK3",
     "Strang ESDIRK3",
-    "Strang DITR U2R2",
-    "Strang DITR U2R1",
-    "DITR U2R2 p-source",
-    "Strang DITR U2R2 p-source",
+    # "Strang DITR U2R2",
+    # "Strang DITR U2R1",
+    # "DITR U2R2 p-source",
+    # "Strang DITR U2R2 p-source",
     # "fully implicit p-source",
     # "DITR U2R2 p-source",
     # "Exp DITR U2R2",
@@ -62,6 +63,10 @@ enabled_methods = [
 
 # Probe locations
 probe_locations = [0.0, 0.5]
+
+# Plot limits (None for auto)
+xlim = None
+ylim = [0, 5]
 
 # ═══════════════════════════════════════════════════════════════════
 
@@ -102,10 +107,13 @@ tag = f"brusselator_k{k_br}_CFL{CFLt}_T{tEnd}_{rec_scheme}"
 
 TC.plot_profiles(fv, results, enabled_methods, ["u", "v"],
                  f"Brusselator  (k={k_br}, CFL={CFLt}, T={tEnd})",
-                 tag, pic_dir, fmt_fig, rec_scheme)
+                 tag, pic_dir, fmt_fig, rec_scheme,
+                 show_title=show_title, xlim=xlim, ylim=ylim)
 
 TC.print_errors(results, enabled_methods,
                 header=f"k={k_br}, CFL={CFLt}, T={tEnd}")
+TC.write_latex_errors(results, enabled_methods, tag)
 
 TC.plot_probes(probe_results, probe_locations, enabled_methods,
-               ["u", "v"], tag, pic_dir, fmt_fig, rec_scheme)
+               ["u", "v"], tag, pic_dir, fmt_fig, rec_scheme,
+               show_title=show_title, xlim=xlim, ylim=ylim)

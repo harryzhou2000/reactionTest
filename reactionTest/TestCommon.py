@@ -6,12 +6,16 @@ norm printing, spatial profile plotting, and probe time series plotting.
 """
 
 import numpy as np
+import pathlib
 import matplotlib.pyplot as plt
 from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
 from Solver.FVUni2nd import FVUni2nd1D
 from Solver.FVUniWENO5Z import FVUniWENO5Z1D
 from Solver.ODE import ESDIRK, DITRExp
 import PlotEnv
+
+# ── Tables output directory ────────────────────────────────────────
+_TABLE_DIR = pathlib.Path(__file__).resolve().parent / "tables"
 
 
 # ── FV class selection ─────────────────────────────────────────────
@@ -260,11 +264,70 @@ def print_errors(results: dict, enabled_methods: list, header: str = ""):
             print(f"  {name:30s}: FAILED")
 
 
+def _fmt_latex_sci(val: float) -> str:
+    """Format a float as $1.234 \\times 10^{-3}$ with 4 significant digits."""
+    s = f"{val:.3e}"  # e.g. "1.234e-03"
+    mantissa, exp_str = s.split("e")
+    exp = int(exp_str)
+    return f"${mantissa} \\times 10^{{{exp}}}$"
+
+
+def write_latex_errors(results: dict, enabled_methods: list, tag: str):
+    """Write L2 error table in LaTeX format to tables/<tag>.txt."""
+    u1_ref = results.get("ref")
+    if u1_ref is None:
+        return
+
+    _TABLE_DIR.mkdir(parents=True, exist_ok=True)
+    outpath = _TABLE_DIR / f"{tag}.txt"
+
+    rows = []
+    for name in enabled_methods:
+        if name == "ref":
+            continue
+        sol = results.get(name)
+        if sol is not None:
+            err = np.linalg.norm(sol - u1_ref) / np.linalg.norm(u1_ref)
+            rows.append((name, _fmt_latex_sci(err)))
+        else:
+            rows.append((name, "FAILED"))
+
+    lines = []
+    lines.append(r"\begin{table}[htb]")
+    lines.append(r"	\centering")
+    lines.append(r"	\caption{}")
+    lines.append(f"	\\label{{tab:REACT_{tag}}}")
+    lines.append(r"	\begin{tabular}{lc}")
+    lines.append(r"		\toprule")
+    lines.append(r"		方法 & $L_2$ 误差 \\")
+    lines.append(r"		\midrule")
+    for name, err_str in rows:
+        lines.append(f"		{name} & {err_str} \\\\")
+    lines.append(r"		\bottomrule")
+    lines.append(r"	\end{tabular}")
+    lines.append(r"\end{table}")
+
+    with open(outpath, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"  LaTeX error table written to {outpath}")
+
+
 # ── Spatial profile plotting ───────────────────────────────────────
+
+def _plot_method(plotEnv, x, y, i, name):
+    """Plot a single method's curve, using bold dashed style for 'ref'."""
+    if name == "ref":
+        plt.plot(x, y, label=name,
+                 color=plotEnv.color_seq[i % len(plotEnv.color_seq)],
+                 lw=plotEnv.lwc * 2.5, ls="--")
+    else:
+        plotEnv.plot(x, y, plotIndex=i, label=name)
+
 
 def plot_profiles(fv, results, enabled_methods, var_names, title_base,
                   tag, pic_dir, fmt_fig, rec_scheme,
-                  plotEnv=None, fig_start=201):
+                  plotEnv=None, fig_start=201, show_title=True,
+                  xlim=None, ylim=None):
     """Plot spatial profiles for each variable."""
     if plotEnv is None:
         plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=max(1, fv.nx // 20))
@@ -274,12 +337,17 @@ def plot_profiles(fv, results, enabled_methods, var_names, title_base,
         for i, name in enumerate(enabled_methods):
             sol = results.get(name)
             if sol is not None:
-                plotEnv.plot(fv.xcs, sol[iVar], plotIndex=i, label=name)
+                _plot_method(plotEnv, fv.xcs, sol[iVar], i, name)
         plt.legend(fontsize=7)
-        plt.title(title_base + f" {vname}"
-                  + (" WENO5" if rec_scheme == "weno5z" else ""))
-        plt.xlabel("x")
-        plt.ylabel(vname)
+        if show_title:
+            plt.title(title_base + f" {vname}"
+                      + (" WENO5" if rec_scheme == "weno5z" else ""))
+        plt.xlabel(r"$x$")
+        plt.ylabel(f"${vname}$")
+        if xlim is not None:
+            plt.xlim(xlim)
+        if ylim is not None:
+            plt.ylim(ylim)
         plt.savefig(pic_dir / f"{tag}_{vname}.{fmt_fig}",
                     dpi=180, bbox_inches="tight")
         plt.show()
@@ -289,7 +357,8 @@ def plot_profiles(fv, results, enabled_methods, var_names, title_base,
 
 def plot_probes(probe_results, probe_locations, enabled_methods,
                 var_names, tag, pic_dir, fmt_fig, rec_scheme,
-                plotEnv=None, fig_start=300):
+                plotEnv=None, fig_start=300, show_title=True,
+                xlim=None, ylim=None):
     """Plot probe time series for each variable at each probe location."""
     if plotEnv is None:
         plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=0)
@@ -305,13 +374,17 @@ def plot_probes(probe_results, probe_locations, enabled_methods,
                     u_arr = np.array(pdata[x_probe]["u"])
                     if u_arr.ndim < 2:
                         continue
-                    plotEnv.plot(t_arr, u_arr[:, iVar],
-                                plotIndex=i, label=name)
+                    _plot_method(plotEnv, t_arr, u_arr[:, iVar], i, name)
             plt.legend(fontsize=7)
-            plt.title(f"{vname} at x={x_probe:.2f}"
-                      + (" WENO5" if rec_scheme == "weno5z" else ""))
-            plt.xlabel("t")
-            plt.ylabel(vname)
+            if show_title:
+                plt.title(f"{vname} at x={x_probe:.2f}"
+                          + (" WENO5" if rec_scheme == "weno5z" else ""))
+            plt.xlabel(r"$t$")
+            plt.ylabel(f"${vname}$")
+            if xlim is not None:
+                plt.xlim(xlim)
+            if ylim is not None:
+                plt.ylim(ylim)
             plt.savefig(
                 pic_dir / f"{tag}_{vname}_x{x_probe}.{fmt_fig}",
                 dpi=180, bbox_inches="tight",

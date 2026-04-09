@@ -1,0 +1,19 @@
+\begin{table}[htb]
+	\centering
+	\caption{}
+	\label{tab:REACT_brusselator_k50_CFL1_T4.0_muscl2}
+	\begin{tabular}{lc}
+		\toprule
+		方法 & $L_2$ 误差 \\
+		\midrule
+		DITR U2R2 & $2.662 \times 10^{-1}$ \\
+		DITR U2R1 & $4.881 \times 10^{-1}$ \\
+		ESDIRK3 & $7.219 \times 10^{-1}$ \\
+		Strang ESDIRK3 & $3.144 \times 10^{-1}$ \\
+		Strang DITR U2R2 & $1.057 \times 10^{-2}$ \\
+		Strang DITR U2R1 & $5.067 \times 10^{-2}$ \\
+		DITR U2R2 p-source & $2.667 \times 10^{-1}$ \\
+		Strang DITR U2R2 p-source & $8.603 \times 10^{-3}$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}

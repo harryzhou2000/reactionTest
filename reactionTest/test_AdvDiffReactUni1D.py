@@ -18,8 +18,9 @@ import TestCommon as TC
 
 # Grid
 Nx = 128
-rec_scheme = "muscl2"  # "muscl2" or "weno5z"
+rec_scheme = "weno5z"  # "muscl2" or "weno5z"
 fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
+show_title = False  # show titles on plots
 
 # Time stepping
 CFLt = 2  # CFL multiplier for coarse dt
@@ -47,10 +48,10 @@ enabled_methods = [
     "DITR U2R1",
     "ESDIRK3",
     "Strang ESDIRK3",
-    "Strang DITR U2R2",
-    "Strang DITR U2R1",
-    "DITR U2R2 p-source",
-    "Strang DITR U2R2 p-source",
+    # "Strang DITR U2R2",
+    # "Strang DITR U2R1",
+    # "DITR U2R2 p-source",
+    # "Strang DITR U2R2 p-source",
     # "fully implicit p-source",
     # "DITR U2R2 p-source",
     # "Exp DITR U2R2",
@@ -59,6 +60,10 @@ enabled_methods = [
 
 # Probe locations (empty list to disable)
 probe_locations = []
+
+# Plot limits (None for auto)
+xlim = [0.25, 0.75]
+ylim = None
 
 # ═══════════════════════════════════════════════════════════════════
 
@@ -97,11 +102,14 @@ tag = f"advdiffreact_k{k_react}_eps{eps_diff}_CFL{CFLt}_T{tEnd}_{rec_scheme}"
 
 TC.plot_profiles(fv, results, enabled_methods, ["u"],
                  f"Adv-Diff-React  (k={k_react}, eps={eps_diff}, CFL={CFLt})",
-                 tag, pic_dir, fmt_fig, rec_scheme)
+                 tag, pic_dir, fmt_fig, rec_scheme,
+                 show_title=show_title, xlim=xlim, ylim=ylim)
 
 TC.print_errors(results, enabled_methods,
                 header=f"k={k_react}, eps={eps_diff}, CFL={CFLt}, T={tEnd}")
+TC.write_latex_errors(results, enabled_methods, tag)
 
 if probe_locations:
     TC.plot_probes(probe_results, probe_locations, enabled_methods,
-                   ["u"], tag, pic_dir, fmt_fig, rec_scheme)
+                   ["u"], tag, pic_dir, fmt_fig, rec_scheme,
+                   show_title=show_title, xlim=xlim, ylim=ylim)

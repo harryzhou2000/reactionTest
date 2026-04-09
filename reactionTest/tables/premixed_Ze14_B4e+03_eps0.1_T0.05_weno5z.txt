@@ -1,0 +1,15 @@
+\begin{table}[htb]
+	\centering
+	\caption{}
+	\label{tab:REACT_premixed_Ze14_B4e+03_eps0.1_T0.05_weno5z}
+	\begin{tabular}{lc}
+		\toprule
+		方法 & $L_2$ 误差 \\
+		\midrule
+		DITR U2R2 & $6.586 \times 10^{-4}$ \\
+		DITR U2R1 & $1.746 \times 10^{-3}$ \\
+		ESDIRK3 & $1.838 \times 10^{-4}$ \\
+		Strang ESDIRK3 & $1.649 \times 10^{-1}$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}

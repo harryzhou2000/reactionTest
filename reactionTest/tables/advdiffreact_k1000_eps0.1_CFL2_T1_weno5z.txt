@@ -1,0 +1,15 @@
+\begin{table}[htb]
+	\centering
+	\caption{}
+	\label{tab:REACT_advdiffreact_k1000_eps0.1_CFL2_T1_weno5z}
+	\begin{tabular}{lc}
+		\toprule
+		方法 & $L_2$ 误差 \\
+		\midrule
+		DITR U2R2 & $3.392 \times 10^{-3}$ \\
+		DITR U2R1 & $3.641 \times 10^{-2}$ \\
+		ESDIRK3 & $6.550 \times 10^{-3}$ \\
+		Strang ESDIRK3 & $2.972 \times 10^{-1}$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}

@@ -29,6 +29,7 @@ import TestCommon as TC
 Nx = 256
 rec_scheme = "weno5z"  # "muscl2" or "weno5z"
 fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
+show_title = False  # show titles on plots
 
 Da = 1e2
 
@@ -71,10 +72,10 @@ enabled_methods = [
     "DITR U2R1",
     "ESDIRK3",
     "Strang ESDIRK3",
-    "Strang DITR U2R2",
-    "Strang DITR U2R1",
-    "DITR U2R2 p-source",
-    "Strang DITR U2R2 p-source",
+    # "Strang DITR U2R2",
+    # "Strang DITR U2R1",
+    # "DITR U2R2 p-source",
+    # "Strang DITR U2R2 p-source",
     # "fully implicit p-source",
     # "DITR U2R2 p-source",
     # "Exp DITR U2R2",
@@ -83,6 +84,10 @@ enabled_methods = [
 
 # Probe locations
 probe_locations = [0.5]
+
+# Plot limits (None for auto)
+xlim = None
+ylim = None
 
 # ═══════════════════════════════════════════════════════════════════
 
@@ -156,9 +161,13 @@ TC.plot_profiles(
     pic_dir,
     fmt_fig,
     rec_scheme,
+    show_title=show_title,
+    xlim=xlim,
+    ylim=ylim,
 )
 
 TC.print_errors(results, enabled_methods, header=f"Ze={Ze}, B={B_react}, T={tEnd}")
+TC.write_latex_errors(results, enabled_methods, tag)
 
 TC.plot_probes(
     probe_results,
@@ -169,4 +178,7 @@ TC.plot_probes(
     pic_dir,
     fmt_fig,
     rec_scheme,
+    show_title=show_title,
+    xlim=xlim,
+    ylim=ylim,
 )
