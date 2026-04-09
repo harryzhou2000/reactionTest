@@ -2,35 +2,42 @@
 
 ## Project Overview
 
-Research codebase exploring implicit ODE methods for advection-reaction PDEs.
-The goal is to evaluate alternatives to Strang splitting -- including fully
+Research codebase exploring implicit ODE methods for advection-diffusion-reaction
+PDEs. The goal is to evaluate alternatives to Strang splitting -- including fully
 implicit, embedded splitting, and exponential DITR -- for eventual use in
-reaction-enabled Navier-Stokes solvers. The current test problem is 1D linear
-advection + bistable reaction on a uniform grid, serving as a model problem.
+reaction-enabled Navier-Stokes solvers. Test problems include 1D bistable
+reaction, Brusselator oscillator, and premixed combustion flame.
 
-**Language:** Python 3.12  
-**Package manager:** Conda (configured via `.vscode/settings.json`)  
-**Dependencies:** numpy, scipy, matplotlib, scienceplots  
+**Language:** Python 3.12
+**Package manager:** Conda (configured via `.vscode/settings.json`)
+**Dependencies:** numpy, scipy, matplotlib, scienceplots
 **No formal build system** -- no `pyproject.toml`, `setup.py`, or `requirements.txt`.
+
+For physical models, spatial discretization, boundary conditions, and test
+problem descriptions, see [`reactionTest/PHYSICS.md`](reactionTest/PHYSICS.md).
 
 ## Project Structure
 
 ```
-reactionTest/               # Main Python package (working directory for scripts)
+reactionTest/                       # Main Python package (working directory)
   __init__.py
-  PlotEnv.py                # Matplotlib plotting utilities (scienceplots styles)
-  Solver/                   # Core solver subpackage
+  PlotEnv.py                        # Matplotlib helpers (scienceplots styles)
+  PHYSICS.md                        # Models, numerics, and test descriptions
+  Solver/
     __init__.py
-    AdvReactUni.py          # Advection-reaction evaluator + solver (~390 lines)
-    AdvReactUniFunctors.py  # Functor classes (Frhs, Fsolve, FrhsDITRExp, FsolveDITR)
-    ESDIRK_Data.py          # Butcher tableau coefficients for ESDIRK methods
-    FVUni2nd.py             # 2nd-order finite volume discretization on uniform 1D grid
-    ODE.py                  # ODE integrator framework (ESDIRK, DITRExp) + ABCs
-  test_ODE.py               # Script test for ODE integrators (dense-matrix exponential)
-  test_AdvReactUni1D.py     # Script test for advection-reaction solver
-  test_AdvReactUni1D.ipynb  # PRIMARY test: bistable reaction, all 7 method variants
-  test_AdvReactUni1D_DITR.ipynb  # DITRExp long-time pure advection test
-  test_BrusselatorUni1D.py  # Brusselator 2-species test with probe time series
+    FVUni2nd.py                     # 2nd-order FV grid, BCs, reconstruction
+    AdvReactUni.py                  # Evaluator (rhs_flow, models) + solver wrapper
+    AdvReactUniFunctors.py          # Functor classes for ODE integrators
+    ODE.py                          # ESDIRK, DITRExp integrator framework + ABCs
+    ESDIRK_Data.py                  # Butcher tableau coefficients
+  test_ODE.py                       # Unit test for ODE integrators
+  test_AdvReactUni1D.py             # Bistable advection-reaction
+  test_AdvDiffReactUni1D.py         # Bistable advection-diffusion-reaction
+  test_BrusselatorUni1D.py          # Brusselator 2-species, periodic BC, probes
+  test_PremixedUni1D.py             # Premixed combustion, Dirichlet BC, probes
+  sweep_brusselator.py              # Brusselator parameter sweep
+  test_AdvReactUni1D.ipynb          # Primary 7-method comparison (Jupyter)
+  test_AdvReactUni1D_DITR.ipynb     # DITRExp pure advection (Jupyter)
 ```
 
 ## Running Tests
@@ -46,16 +53,11 @@ cd reactionTest
 # Run a single test script
 python test_ODE.py
 python test_AdvReactUni1D.py
+python test_PremixedUni1D.py
 
 # Run a module directly (some files have __main__ blocks)
 python Solver/FVUni2nd.py
-python Solver/AdvReactUni.py
 ```
-
-The primary comparison is in `test_AdvReactUni1D.ipynb` (run in Jupyter). It
-compares 7 configurations on the bistable problem: reference (ESDIRK4, fine dt),
-Strang splitting, fully implicit ESDIRK3, DITR, Exponential DITR, Embed ESDIRK3,
-and Embed DITR.
 
 There is no lint, format, type-check, or build command configured.
 
@@ -75,15 +77,37 @@ Three splitting modes exist in `stepInterval()`:
 - `"embed"` -- embedded splitting: source sub-steps at each RK stage node,
   flow solved implicitly with forcing correction.
 
+### Source Function Dispatch
+
+`AdvReactUni1DEval` binds model-specific `rhs_source` and `rhs_source_jacobian`
+methods at construction time based on the `model` string. This avoids if-elif
+branching on every call during the implicit iteration. The bound methods are
+named `_rhs_source_<model>` and `_rhs_source_jacobian_<model>`.
+
+### Boundary Conditions
+
+`FVUni2nd1D` defaults to periodic BC. Call `set_bc_dirichlet(uL, uR)` to switch
+to Dirichlet. The `cellOthers` generator accepts `homogeneous=True` to zero out
+boundary ghosts -- used internally by Jacobi iterations on the correction `du`.
+
 ### Probe Recording
 
-`AdvReactUni1DSolver` supports recording time series at specified spatial
-locations via the probe API:
+`AdvReactUni1DSolver` records time series at specified spatial locations:
 
 - `set_probes(x_locations)` -- set probe locations (mapped to nearest cell center).
 - `clear_probes()` -- clear recorded data for all probes.
-- `get_probe_data(x=None)` -- retrieve recorded data; returns dict with `"t"` and `"u"`.
-- `stepInterval(..., record_probes=True)` -- enable recording during time integration.
+- `get_probe_data(x=None)` -- retrieve recorded data (returns a deep copy).
+- `stepInterval(..., record_probes=True)` -- enable recording during integration.
+
+`get_probe_data()` returns a deep copy, so callers are not affected by
+subsequent `clear_probes()` calls on the same solver instance.
+
+### Per-Component Diffusion
+
+`AdvReactUni1DEval` stores diffusion coefficients as `self.eps` with shape
+`(nVars, 1)`. Pass `nVars=` to the constructor when using per-component values
+(e.g., `params={"eps": [0.02, 0.01]}, nVars=2`). A scalar `eps` broadcasts to
+all components.
 
 ### Exponential Jacobian Abstraction
 
@@ -100,26 +124,17 @@ overridable methods on `ODE_F_RHS`:
 - `JacobianExpoPhikSeq(u, dt, k_max)` -- phi-function sequence with fallback
   to Taylor limits (`1/k!`) when `|A*dt| < 1e-3`.
 
-The defaults make the exponential degenerate to regular DITR (A ~ 0).
 When `A = 0`, exponential DITR falls back to standard DITR.
 
-**Current Jacobian dimension support** (`invert_jacobian_diag` / `jacobian_diag_mult`):
+**Jacobian dimension support** (`invert_jacobian_diag` / `jacobian_diag_mult`):
 
 | `ndim` | Shape              | Meaning                  | Inversion     | Multiply        |
 |--------|--------------------|--------------------------|---------------|-----------------|
 | 2      | `(nVars, nx)`      | Per-element scalar diag  | `1.0 / JD`   | `JD * u`        |
 | 3      | `(nVars, nVars, nx)` | Per-point dense matrix | `pinv` batch  | `einsum ij..,j..->i..` |
 
-**Known limitation:** The exponential Jacobian methods in `FrhsDITRExp` (inside
-`AdvReactUni1DSolver`) currently only handle `ndim==2` (per-element scalars using
-`np.exp` and `*`). The `test_ODE.py` version uses full matrices (`expm`, `@`).
-Future work needs the `ndim==3` path (per-point diagonal or dense matrix) in the
-exponential methods -- `JacobianExpoExp`, `JacobianExpoPhikSeq`, and the
-`a22Invb2 = 1.0 / a22` line in `DITRExp.step()` (marked `# TODO`).
-
 **Stability clamping:** `FrhsDITRExp.JacobianExpo` clamps `currentA` to strictly
-negative values via `np.minimum(JDSource, abs(JDSource).max() * -1e-4)`.
-Positive eigenvalues would cause `exp(A*dt)` to blow up.
+negative values. Positive eigenvalues would cause `exp(A*dt)` to blow up.
 
 ## Code Style
 
@@ -196,11 +211,14 @@ prioritizes mathematical readability over PEP 8 strict naming.
 ## Common Pitfalls
 
 - Scripts must run from `reactionTest/` directory, not the repo root.
-- `AdvReactUni.py` has deeply nested inner classes -- read carefully
-  before modifying.
 - The `DITRExp` solver passes lists of arrays and nested alpha coefficient lists
   to `fSolve` -- the interface differs from `ESDIRK`'s scalar `alphaRHS`.
 - `recGrad` in `FVUni2nd.py` applies Barth-Jespersen limiting -- do not remove
   the limiter logic without understanding its role in preventing oscillations.
 - `FsolveDITR` uses `isinstance(fRHS, FrhsDITRExp)` to correct the Jacobian
   preconditioner when the exponential RHS subtracts the `A*(u - u_ref)` term.
+- When multiple methods share one solver instance, `get_probe_data()` returns
+  a deep copy to prevent `clear_probes()` from clobbering earlier results.
+- Jacobi iterations on correction `du` must use `cellOthers(..., homogeneous=True)`
+  for Dirichlet BCs. The boundary ghost for `du` is zero (homogeneous), not
+  the physical BC value.

@@ -21,6 +21,7 @@ import pathlib
 import matplotlib.pyplot as plt
 from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
 from Solver.FVUni2nd import FVUni2nd1D
+from Solver.FVUniWENO5Z import FVUniWENO5Z1D
 from Solver.ODE import ESDIRK, DITRExp
 import PlotEnv
 
@@ -30,6 +31,8 @@ import PlotEnv
 
 # Grid
 Nx = 256
+rec_scheme = "weno5z"  # "muscl2" or "weno5z"
+fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
 
 Da = 1e2
 
@@ -81,7 +84,7 @@ pic_dir = script_dir / "pics" / "premixed"
 pic_dir.mkdir(parents=True, exist_ok=True)
 
 # ── Setup ───────────────────────────────────────────────────────────
-fv = FVUni2nd1D(nx=Nx)
+fv = {"muscl2": FVUni2nd1D, "weno5z": FVUniWENO5Z1D}[rec_scheme](nx=Nx)
 
 # Dirichlet BCs: left = unburnt, right = burnt
 bcL = np.array([T0, 1.0])      # [T_unburnt, Y_unburnt]
@@ -239,7 +242,7 @@ for name in enabled_methods:
 
 # ── Plot spatial profiles ───────────────────────────────────────────
 plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=max(1, Nx // 20))
-tag = f"Ze{Ze:.2g}_B{B_react:.2g}_eps{eps_T:.2g}_T{tEnd:.2g}"
+tag = f"Ze{Ze:.2g}_B{B_react:.2g}_eps{eps_T:.2g}_T{tEnd:.2g}_{rec_scheme}"
 
 # Temperature
 fig = plotEnv.figure(201, figsize=(6, 4))
@@ -248,10 +251,13 @@ for i, name in enumerate(enabled_methods):
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[0], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Premixed T  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})")
+plt.title(
+    f"Premixed T  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})"
+    + (" WENO5" if rec_scheme == "weno5z" else "")
+)
 plt.xlabel("x")
 plt.ylabel("T")
-plt.savefig(pic_dir / f"premixed_T_{tag}.png", dpi=180, bbox_inches="tight")
+plt.savefig(pic_dir / f"premixed_T_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight")
 plt.show()
 
 # Fuel fraction
@@ -261,10 +267,13 @@ for i, name in enumerate(enabled_methods):
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[1], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Premixed Y  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})")
+plt.title(
+    f"Premixed Y  (Ze={Ze:.2g}, B={B_react:.2g}, T={tEnd:.2g})"
+    + (" WENO5" if rec_scheme == "weno5z" else "")
+)
 plt.xlabel("x")
 plt.ylabel("Y")
-plt.savefig(pic_dir / f"premixed_Y_{tag}.png", dpi=180, bbox_inches="tight")
+plt.savefig(pic_dir / f"premixed_Y_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight")
 plt.show()
 
 # ── Error norms ─────────────────────────────────────────────────────
@@ -297,7 +306,7 @@ for x_probe in probe_locations:
     plt.xlabel("t")
     plt.ylabel("T")
     plt.savefig(
-        pic_dir / f"premixed_T_x{x_probe}_{tag}.png",
+        pic_dir / f"premixed_T_x{x_probe}_{tag}.{fmt_fig}",
         dpi=180, bbox_inches="tight",
     )
     plt.show()
@@ -315,7 +324,7 @@ for x_probe in probe_locations:
     plt.xlabel("t")
     plt.ylabel("Y")
     plt.savefig(
-        pic_dir / f"premixed_Y_x{x_probe}_{tag}.png",
+        pic_dir / f"premixed_Y_x{x_probe}_{tag}.{fmt_fig}",
         dpi=180, bbox_inches="tight",
     )
     plt.show()

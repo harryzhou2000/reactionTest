@@ -7,10 +7,12 @@ import numpy as np
 import sys, io, contextlib
 from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
 from Solver.FVUni2nd import FVUni2nd1D
+from Solver.FVUniWENO5Z import FVUniWENO5Z1D
 from Solver.ODE import ESDIRK
 
 Nx = 64  # coarser for speed
-fv = FVUni2nd1D(nx=Nx)
+rec_scheme = "muscl2"  # "muscl2" or "weno5z"
+fv = {"muscl2": FVUni2nd1D, "weno5z": FVUniWENO5Z1D}[rec_scheme](nx=Nx)
 
 A_br = 1.0
 B_br = 3.0

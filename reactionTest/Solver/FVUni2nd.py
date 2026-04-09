@@ -1,70 +1,16 @@
 import numpy as np
 
+try:
+    from .FVUni1D import FVUni1D
+except ImportError:
+    from FVUni1D import FVUni1D
 
-class FVUni2nd1D:
+
+class FVUni2nd1D(FVUni1D):
+    """2nd-order FV with MUSCL reconstruction and Barth-Jespersen limiter."""
+
     def __init__(self, nx: int):
-        self.xs = np.linspace(0, 1, nx + 1)
-        self.xcs = (self.xs[0:-1] + self.xs[1:]) * 0.5
-        self.hx: float = 1.0 / nx
-        self.nx = nx
-        self.vol = self.hx
-
-        # Boundary conditions: None = periodic (default)
-        # Set via set_bc_dirichlet(uL, uR) where uL, uR are (nVars,) arrays.
-        self.bcL = None  # (nVars,) or None
-        self.bcR = None  # (nVars,) or None
-
-    def set_bc_dirichlet(self, uL: np.ndarray, uR: np.ndarray):
-        """Set Dirichlet boundary values at left and right faces.
-
-        Args:
-            uL: Left boundary value, shape (nVars,).
-            uR: Right boundary value, shape (nVars,).
-        """
-        self.bcL = np.asarray(uL, dtype=float)
-        self.bcR = np.asarray(uR, dtype=float)
-
-    def cellOthers(self, us: list[np.ndarray], homogeneous: bool = False):
-        if self.bcL is None:
-            # Periodic BC (original behavior)
-            uN = [np.roll(u, 1, axis=-1) for u in us]
-            yield -1, -self.hx, uN
-
-            uN = [np.roll(u, -1, axis=-1) for u in us]
-            yield 1, self.hx, uN
-        else:
-            # Dirichlet BC: replace rolled boundary values with ghost values
-            # homogeneous=True: zero boundary ghost (for du corrections)
-            # homogeneous=False: use bcL/bcR (for u evaluation)
-
-            # Left neighbor (nx=-1): roll +1 wraps cell[-1] into position [0]
-            uN = [np.roll(u, 1, axis=-1) for u in us]
-            for uNi in uN:
-                if homogeneous:
-                    uNi[..., 0] = 0.0
-                elif uNi.ndim == 2:
-                    uNi[:, 0] = self.bcL
-                else:
-                    uNi[..., 0] = 0.0  # zero ghost gradient
-            yield -1, -self.hx, uN
-
-            # Right neighbor (nx=+1): roll -1 wraps cell[0] into position [-1]
-            uN = [np.roll(u, -1, axis=-1) for u in us]
-            for uNi in uN:
-                if homogeneous:
-                    uNi[..., -1] = 0.0
-                elif uNi.ndim == 2:
-                    uNi[:, -1] = self.bcR
-                else:
-                    uNi[..., -1] = 0.0  # zero ghost gradient
-            yield 1, self.hx, uN
-
-    def get_shape_u(self, u):
-        nVars = u.shape[0]
-        nx = u.shape[1]
-        if len(u.shape) != 2 or nx != self.nx:
-            raise ValueError("u size not compatible: " + f"{u.shape}")
-        return nVars, nx
+        super().__init__(nx)
 
     def recGrad(self, u: np.ndarray):
         nVars, nx = self.get_shape_u(u)
@@ -92,10 +38,70 @@ class FVUni2nd1D:
 
         return uGrad
 
+    def recFaceValues(self, u: np.ndarray):
+        """Reconstruct left/right face values via MUSCL + Barth-Jespersen.
+
+        Returns:
+            (uL, uR): shape (nVars, nFaces).
+                Periodic: nFaces = nx, face i sits between cell i-1 and cell i.
+                Dirichlet: nFaces = nx+1, face 0 = left boundary, face nx = right.
+        """
+        nVars, nx = self.get_shape_u(u)
+        uGrad = self.recGrad(u)
+
+        if self.bcL is None:
+            # Periodic: nFaces = nx
+            # Face i sits between cell (i-1) % nx and cell i.
+            # uL at face i = u[i-1] + hx/2 * grad[i-1]   (reconstructed from left cell)
+            # uR at face i = u[i]   - hx/2 * grad[i]      (reconstructed from right cell)
+            uL = np.roll(u + 0.5 * self.hx * uGrad[0], 1, axis=-1)
+            uR = u - 0.5 * self.hx * uGrad[0]
+            return uL, uR
+        else:
+            # Dirichlet: nFaces = nx + 1
+            nFaces = nx + 1
+            uL = np.zeros((nVars, nFaces))
+            uR = np.zeros((nVars, nFaces))
+
+            # Interior faces 1..nx-1: face i between cell i-1 and cell i
+            uL[:, 1:nx] = u[:, :nx-1] + 0.5 * self.hx * uGrad[0, :, :nx-1]
+            uR[:, 1:nx] = u[:, 1:nx] - 0.5 * self.hx * uGrad[0, :, 1:nx]
+
+            # Face 0 (left boundary): uL = bcL, uR = u[0] - hx/2 * grad[0]
+            uL[:, 0] = self.bcL
+            uR[:, 0] = u[:, 0] - 0.5 * self.hx * uGrad[0, :, 0]
+
+            # Face nx (right boundary): uL = u[-1] + hx/2 * grad[-1], uR = bcR
+            uL[:, nx] = u[:, -1] + 0.5 * self.hx * uGrad[0, :, -1]
+            uR[:, nx] = self.bcR
+
+            return uL, uR
+
+
+    def recPointValues(self, u: np.ndarray, xiPts: np.ndarray):
+        """Evaluate MUSCL linear reconstruction at internal points.
+
+        Args:
+            u: Cell-averaged solution, shape (nVars, nx).
+            xiPts: Local coordinates in [-1/2, 1/2], shape (nPts,).
+
+        Returns:
+            uPts: shape (nVars, nx, nPts).
+        """
+        nVars, nx = self.get_shape_u(u)
+        uGrad = self.recGrad(u)  # (1, nVars, nx)
+        nPts = len(xiPts)
+        # p(xi) = u_i + uGrad_i * hx * xi
+        # u: (nVars, nx) -> (nVars, nx, 1)
+        # uGrad[0]: (nVars, nx) -> (nVars, nx, 1)
+        # xiPts: (nPts,) -> (1, 1, nPts)
+        uPts = (u[:, :, np.newaxis]
+                + uGrad[0, :, :, np.newaxis] * self.hx
+                * xiPts[np.newaxis, np.newaxis, :])
+        return uPts
+
 
 if __name__ == "__main__":
     fv = FVUni2nd1D(20)
     u = np.array([np.sin(fv.xcs * 2 * np.pi)])
     print(fv.recGrad(u))
-
-    

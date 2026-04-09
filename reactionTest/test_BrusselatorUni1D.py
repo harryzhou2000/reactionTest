@@ -15,6 +15,7 @@ import pathlib
 import matplotlib.pyplot as plt
 from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
 from Solver.FVUni2nd import FVUni2nd1D
+from Solver.FVUniWENO5Z import FVUniWENO5Z1D
 from Solver.ODE import ESDIRK, DITRExp
 import PlotEnv
 
@@ -24,6 +25,8 @@ import PlotEnv
 
 # Grid
 Nx = 128
+rec_scheme = "weno5z"  # "muscl2" or "weno5z"
+fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
 
 # Time stepping
 CFLt = 1  # CFL multiplier for coarse dt
@@ -62,7 +65,7 @@ pic_dir = script_dir / "pics" / "brusselator"
 pic_dir.mkdir(parents=True, exist_ok=True)
 
 # ── Setup ───────────────────────────────────────────────────────────
-fv = FVUni2nd1D(nx=Nx)
+fv = {"muscl2": FVUni2nd1D, "weno5z": FVUniWENO5Z1D}[rec_scheme](nx=Nx)
 ev = AdvReactUni1DEval(
     fv=fv,
     model="brusselator",
@@ -217,7 +220,7 @@ for name in enabled_methods:
 
 # ── Plot ────────────────────────────────────────────────────────────
 plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=10)
-tag = f"k{k_br}_CFL{CFLt}_T{tEnd}"
+tag = f"k{k_br}_CFL{CFLt}_T{tEnd}_{rec_scheme}"
 
 # Species u
 fig = plotEnv.figure(201, figsize=(6, 4))
@@ -226,10 +229,13 @@ for i, name in enumerate(enabled_methods):
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[0], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Brusselator u  (k={k_br}, CFL={CFLt}, T={tEnd})")
+plt.title(
+    f"Brusselator u  (k={k_br}, CFL={CFLt}, T={tEnd})"
+    + (" WENO5" if rec_scheme == "weno5z" else "")
+)
 plt.xlabel("x")
 plt.ylabel("u")
-plt.savefig(pic_dir / f"brusselator_u_{tag}.png", dpi=180, bbox_inches="tight")
+plt.savefig(pic_dir / f"brusselator_u_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight")
 plt.show()
 
 # Species v
@@ -239,10 +245,13 @@ for i, name in enumerate(enabled_methods):
     if sol is not None:
         plotEnv.plot(fv.xcs, sol[1], plotIndex=i, label=name)
 plt.legend()
-plt.title(f"Brusselator v  (k={k_br}, CFL={CFLt}, T={tEnd})")
+plt.title(
+    f"Brusselator v  (k={k_br}, CFL={CFLt}, T={tEnd})"
+    + (" WENO5" if rec_scheme == "weno5z" else "")
+)
 plt.xlabel("x")
 plt.ylabel("v")
-plt.savefig(pic_dir / f"brusselator_v_{tag}.png", dpi=180, bbox_inches="tight")
+plt.savefig(pic_dir / f"brusselator_v_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight")
 plt.show()
 
 # ── Error norms ─────────────────────────────────────────────────────
@@ -271,11 +280,14 @@ for x_probe in probe_locations:
             u_arr = np.array(pdata[x_probe]["u"])
             plotEnv.plot(t_arr, u_arr[:, 0], plotIndex=i, label=name)
     plt.legend()
-    plt.title(f"Brusselator u at x={x_probe}  (k={k_br}, CFL={CFLt})")
+    plt.title(
+        f"Brusselator u at x={x_probe}  (k={k_br}, CFL={CFLt})"
+        + (" WENO5" if rec_scheme == "weno5z" else "")
+    )
     plt.xlabel("t")
     plt.ylabel("u")
     plt.savefig(
-        pic_dir / f"brusselator_u_x{x_probe}_{tag}.png", dpi=180, bbox_inches="tight"
+        pic_dir / f"brusselator_u_x{x_probe}_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight"
     )
     plt.show()
 
@@ -288,10 +300,13 @@ for x_probe in probe_locations:
             u_arr = np.array(pdata[x_probe]["u"])
             plotEnv.plot(t_arr, u_arr[:, 1], plotIndex=i, label=name)
     plt.legend()
-    plt.title(f"Brusselator v at x={x_probe}  (k={k_br}, CFL={CFLt})")
+    plt.title(
+        f"Brusselator v at x={x_probe}  (k={k_br}, CFL={CFLt})"
+        + (" WENO5" if rec_scheme == "weno5z" else "")
+    )
     plt.xlabel("t")
     plt.ylabel("v")
     plt.savefig(
-        pic_dir / f"brusselator_v_x{x_probe}_{tag}.png", dpi=180, bbox_inches="tight"
+        pic_dir / f"brusselator_v_x{x_probe}_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight"
     )
     plt.show()

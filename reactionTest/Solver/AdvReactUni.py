@@ -1,8 +1,10 @@
 if __name__ == "__main__":
+    from FVUni1D import FVUni1D
     from FVUni2nd import FVUni2nd1D
     from AdvReactUniFunctors import Frhs, Fsolve, FrhsDITRExp, FsolveDITR
     import ODE
 else:
+    from .FVUni1D import FVUni1D
     from .FVUni2nd import FVUni2nd1D
     from .AdvReactUniFunctors import Frhs, Fsolve, FrhsDITRExp, FsolveDITR
     from . import ODE
@@ -10,13 +12,15 @@ import numpy as np
 
 
 class AdvReactUni1DEval:
-    def __init__(self, fv: FVUni2nd1D, model: str = "", params={}, nVars: int = 1):
-        self.fv: FVUni2nd1D = fv
+    def __init__(self, fv: FVUni1D, model: str = "", params={}, nVars: int = 1,
+                 source_quadrature: int = 0):
+        self.fv: FVUni1D = fv
 
         self.ax: float = 1.0
 
         self.model = model.lower()
         self.params = params
+        self.source_quadrature = source_quadrature
 
         # Per-component diffusion coefficients: always (nVars, 1) for broadcasting
         eps_raw = params.get("eps", 0.0)
@@ -25,30 +29,71 @@ class AdvReactUni1DEval:
             eps_arr = np.broadcast_to(eps_arr, (nVars,)).copy()
         self.eps = eps_arr.reshape(-1, 1)  # (nVars, 1)
 
-        # Bind model-specific source functions to avoid if-elif per call
+        # Bind model-specific source functions to avoid if-elif per call.
+        # _rhs_source_raw is always the pointwise source (used by quadrature).
+        # rhs_source is what the solver calls; it may be the quadrature wrapper.
+        # rhs_source_jacobian is always evaluated at cell averages (unchanged).
         if self.model == "bistable":
-            self.rhs_source = self._rhs_source_bistable
+            self._rhs_source_raw = self._rhs_source_bistable
             self.rhs_source_jacobian = self._rhs_source_jacobian_bistable
         elif self.model == "brusselator":
-            self.rhs_source = self._rhs_source_brusselator
+            self._rhs_source_raw = self._rhs_source_brusselator
             self.rhs_source_jacobian = self._rhs_source_jacobian_brusselator
         elif self.model == "premixed":
-            self.rhs_source = self._rhs_source_premixed
+            self._rhs_source_raw = self._rhs_source_premixed
             self.rhs_source_jacobian = self._rhs_source_jacobian_premixed
         else:
-            self.rhs_source = self._rhs_source_none
+            self._rhs_source_raw = self._rhs_source_none
             self.rhs_source_jacobian = self._rhs_source_jacobian_none
 
+        if source_quadrature > 0:
+            self._source_xi, self._source_w = FVUni1D.gaussPoints(source_quadrature)
+            self.rhs_source = self._rhs_source_quadrature
+        else:
+            self.rhs_source = self._rhs_source_raw
+
+    def _rhs_source_quadrature(self, u: np.ndarray):
+        """Evaluate source via Gauss quadrature over the reconstructed polynomial.
+
+        Reconstructs u(x) at Gauss points within each cell using
+        fv.recPointValues, evaluates the pointwise source S(u(x)) at
+        each quadrature point, and integrates to obtain the cell-average
+        source.  More accurate than S(u_avg) for nonlinear sources.
+
+        The source Jacobian is NOT affected by this option; it remains
+        evaluated at the cell-averaged u.
+        """
+        # uPts: (nVars, nx, nPts)
+        uPts = self.fv.recPointValues(u, self._source_xi)
+        nVars, nx = self.fv.get_shape_u(u)
+        nPts = len(self._source_xi)
+
+        # Evaluate S at each quadrature point
+        # Reshape to (nVars, nx*nPts), evaluate, reshape back
+        uFlat = uPts.reshape(nVars, nx * nPts)
+        sFlat = self._rhs_source_raw(uFlat)
+        sPts = sFlat.reshape(nVars, nx, nPts)
+
+        # Integrate: cell-average source = sum_p w_p * S(u(xi_p))
+        return np.einsum("vnp,p->vn", sPts, self._source_w)
+
     def rhs_flow(self, u: np.ndarray):
-        uGrad = self.fv.recGrad(u)
-        rhs = np.zeros_like(u)
-        for nx, dx, (uN, uGradN) in self.fv.cellOthers((u, uGrad)):
-            uRec = u + dx * 0.5 * uGrad[0]
-            uRecN = uN - dx * 0.5 * uGradN[0]
-            an = self.ax * nx
-            f = 0.5 * an * (uRec + uRecN) - 0.5 * abs(an) * (uRecN - uRec)
-            rhs += -f * 1.0
-        rhs /= self.fv.vol
+        nVars, nx = self.fv.get_shape_u(u)
+
+        # Reconstruct left/right face values via the FV scheme
+        uL, uR = self.fv.recFaceValues(u)
+
+        # Rusanov (local Lax-Friedrichs) flux at each face
+        a = self.ax
+        fFlux = 0.5 * a * (uL + uR) - 0.5 * abs(a) * (uR - uL)
+
+        # Accumulate net flux: rhs[i] = -(F_{i+1} - F_i) / vol
+        if self.fv.bcL is None:
+            # Periodic: nFaces = nx, face i between cell (i-1)%nx and cell i
+            rhs = -(np.roll(fFlux, -1, axis=-1) - fFlux) / self.fv.vol
+        else:
+            # Dirichlet: nFaces = nx+1, face 0..nx
+            rhs = -(fFlux[:, 1:] - fFlux[:, :-1]) / self.fv.vol
 
         # Diffusion: eps * u_xx via central difference (per-component)
         if np.any(self.eps != 0.0):
