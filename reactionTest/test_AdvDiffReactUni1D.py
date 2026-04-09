@@ -10,12 +10,7 @@ errors -- a clean scalar metric to compare methods.
 
 import numpy as np
 import pathlib
-import matplotlib.pyplot as plt
-from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
-from Solver.FVUni2nd import FVUni2nd1D
-from Solver.FVUniWENO5Z import FVUniWENO5Z1D
-from Solver.ODE import ESDIRK, DITRExp
-import PlotEnv
+import TestCommon as TC
 
 # ╔══════════════════════════════════════════════════════════════════╗
 # ║  Problem configuration -- change only this block                 ║
@@ -23,7 +18,7 @@ import PlotEnv
 
 # Grid
 Nx = 128
-rec_scheme = "weno5z"  # "muscl2" or "weno5z"
+rec_scheme = "muscl2"  # "muscl2" or "weno5z"
 fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
 
 # Time stepping
@@ -42,18 +37,28 @@ CFL_ref = 1000  # pseudo-time CFL for reference
 CFL_coarse = 10  # pseudo-time CFL for coarse runs
 rel_tol = 1e-4
 max_iter_exp = 50  # max iterations for exponential DITR
+ref_suffix = " p-source"  # "" = base evaluator, " p-source" = quadrature source for ref
+# ref_suffix = ""
 
-# Methods to run (comment out lines to skip)
+# Methods to run
 enabled_methods = [
     "ref",
-    "Strang",
-    "Strang DITR",
-    "fully implicit",
-    "DITR",
-    "Exp DITR",
-    # "Embed implicit",
-    # "Embed DITR",
+    "DITR U2R2",
+    "DITR U2R1",
+    "ESDIRK3",
+    "Strang ESDIRK3",
+    "Strang DITR U2R2",
+    "Strang DITR U2R1",
+    "DITR U2R2 p-source",
+    "Strang DITR U2R2 p-source",
+    # "fully implicit p-source",
+    # "DITR U2R2 p-source",
+    # "Exp DITR U2R2",
+    # "Embed DITR U2R2",
 ]
+
+# Probe locations (empty list to disable)
+probe_locations = []
 
 # ═══════════════════════════════════════════════════════════════════
 
@@ -63,139 +68,40 @@ pic_dir = script_dir / "pics" / "advdiffreact"
 pic_dir.mkdir(parents=True, exist_ok=True)
 
 # ── Setup ───────────────────────────────────────────────────────────
-fv = {"muscl2": FVUni2nd1D, "weno5z": FVUniWENO5Z1D}[rec_scheme](nx=Nx)
-ev = AdvReactUni1DEval(
-    fv=fv,
-    model="bistable",
-    params={"a": a_react, "k": k_react, "eps": eps_diff},
-)
+fv = TC.make_fv(rec_scheme, Nx)
 
-solver4 = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK4"))
-solver = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("ESDIRK3"))
-solverDITR = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
+ev_params = dict(model="bistable",
+                 params={"a": a_react, "k": k_react, "eps": eps_diff})
 
-# Initial condition
-u = np.array([np.sin(fv.xcs * np.pi * 2) * 0.5 + 0.5])
+ev = TC.make_ev(fv, **ev_params)
+ev_ps = TC.make_ev(fv, **ev_params, source_quadrature=3)
 
-# ── Method registry ────────────────────────────────────────────────
-method_runners = {
-    "ref": lambda: solver4.stepInterval(
-        dtRef,
-        u,
-        0.0,
-        tEnd,
-        mode="full",
-        solve_opts={"CFL": CFL_ref},
-    ),
-    "Strang": lambda: solver.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        mode="strang",
-        solve_opts={"CFL": CFL_coarse},
-    ),
-    "Strang DITR": lambda: solverDITR.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        mode="strang",
-        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-    ),
-    "fully implicit": lambda: solver.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-    ),
-    "DITR": lambda: solverDITR.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-        use_exp=False,
-    ),
-    "Exp DITR": lambda: solverDITR.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse, "max_iter": max_iter_exp},
-        use_exp=True,
-    ),
-    "Embed implicit": lambda: solver.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        mode="embed",
-        solve_opts={"CFL": CFL_coarse},
-    ),
-    "Embed DITR": lambda: solverDITR.stepInterval(
-        dt,
-        u,
-        0.0,
-        tEnd,
-        mode="embed",
-        solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
-        use_exp=False,
-    ),
+solver_sets = {
+    "": TC.SolverSet(ev, probe_locations),
+    " p-source": TC.SolverSet(ev_ps, probe_locations),
 }
 
-# ── Run selected methods ────────────────────────────────────────────
-results = {}
+# Initial condition
+u0 = np.array([np.sin(fv.xcs * np.pi * 2) * 0.5 + 0.5])
 
-for name in enabled_methods:
-    runner = method_runners.get(name)
-    if runner is None:
-        print(f"WARNING: unknown method '{name}', skipping")
-        continue
-    print("=" * 60)
-    print(name)
-    print("=" * 60)
-    try:
-        sol = runner()
-        results[name] = sol
-        print(f"  >> {name} completed, uNorm = {np.linalg.norm(sol):.6e}")
-    except Exception as e:
-        print(f"  >> {name} FAILED: {e}")
-        results[name] = None
-
-# ── Plot ────────────────────────────────────────────────────────────
-plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=10)
-tag = f"k{k_react}_eps{eps_diff}_CFL{CFLt}_T{tEnd}_{rec_scheme}"
-
-fig = plotEnv.figure(101, figsize=(6, 4))
-for i, name in enumerate(enabled_methods):
-    sol = results.get(name)
-    if sol is not None:
-        plotEnv.plot(fv.xcs, sol[0], plotIndex=i, label=name)
-plt.legend()
-plt.title(
-    f"Adv-Diff-React  (k={k_react}, eps={eps_diff}, CFL={CFLt})"
-    + (" WENO5" if rec_scheme == "weno5z" else "")
+# ── Build & run ────────────────────────────────────────────────────
+runners = TC.build_method_runners(
+    solver_sets, dt, dtRef, u0, tEnd,
+    CFL_ref, CFL_coarse, rel_tol, max_iter_exp,
+    record_probes=bool(probe_locations), ref_suffix=ref_suffix,
 )
-plt.xlabel("x")
-plt.ylabel("u")
-plt.savefig(pic_dir / f"advdiffreact_{tag}.{fmt_fig}", dpi=180, bbox_inches="tight")
-plt.show()
+results, probe_results = TC.run_methods(runners, enabled_methods)
 
-# ── Error norms ─────────────────────────────────────────────────────
-u1_ref = results.get("ref")
-if u1_ref is not None:
-    print("\n" + "=" * 60)
-    print(
-        f"L2 errors vs reference  (k={k_react}, eps={eps_diff}, CFL={CFLt}, T={tEnd}):"
-    )
-    for name in enabled_methods:
-        if name == "ref":
-            continue
-        sol = results.get(name)
-        if sol is not None:
-            err = np.linalg.norm(sol - u1_ref) / np.linalg.norm(u1_ref)
-            print(f"  {name:25s}: {err:.6e}")
-        else:
-            print(f"  {name:25s}: FAILED")
+# ── Plot & errors ──────────────────────────────────────────────────
+tag = f"advdiffreact_k{k_react}_eps{eps_diff}_CFL{CFLt}_T{tEnd}_{rec_scheme}"
+
+TC.plot_profiles(fv, results, enabled_methods, ["u"],
+                 f"Adv-Diff-React  (k={k_react}, eps={eps_diff}, CFL={CFLt})",
+                 tag, pic_dir, fmt_fig, rec_scheme)
+
+TC.print_errors(results, enabled_methods,
+                header=f"k={k_react}, eps={eps_diff}, CFL={CFLt}, T={tEnd}")
+
+if probe_locations:
+    TC.plot_probes(probe_results, probe_locations, enabled_methods,
+                   ["u"], tag, pic_dir, fmt_fig, rec_scheme)

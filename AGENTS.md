@@ -72,6 +72,7 @@ All ODE integrators are **implicit**. The two integrator families are:
   sweep, iterating the whole sweep until convergence (not a 2x-large Newton).
 
 Three splitting modes exist in `stepInterval()`:
+
 - `"full"` -- monolithic implicit (flow + source coupled).
 - `"strang"` -- classical Strang operator splitting (half-flow, source, half-flow).
 - `"embed"` -- embedded splitting: source sub-steps at each RK stage node,
@@ -145,12 +146,14 @@ negative values. Positive eigenvalues would cause `exp(A*dt)` to blow up.
 - Relative imports within the `Solver/` subpackage:
   `from .FVUni2nd import FVUni2nd1D`, `from . import ODE`.
 - Files with `__main__` blocks use a conditional pattern for dual import support:
+
   ```python
   if __name__ == "__main__":
       from FVUni2nd import FVUni2nd1D
   else:
       from .FVUni2nd import FVUni2nd1D
   ```
+
 - Test scripts use absolute-from-package imports: `import Solver.ODE as ODE`.
 
 ### Naming Conventions

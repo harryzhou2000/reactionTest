@@ -1,38 +1,49 @@
+"""
+Test: 1D advection-reaction with bistable source.
+
+    u_t + a u_x = k * u(1-u)(u-a)
+
+Quick single-run test with DITRExp.
+"""
+
 import numpy as np
-from Solver.AdvReactUni import AdvReactUni1DSolver, AdvReactUni1DEval
-from Solver.FVUni2nd import FVUni2nd1D
-from Solver.FVUniWENO5Z import FVUniWENO5Z1D
-from Solver.ODE import ESDIRK, DITRExp
+from Solver.AdvReactUni import AdvReactUni1DEval
+import TestCommon as TC
+
+# ╔══════════════════════════════════════════════════════════════════╗
+# ║  Configuration                                                  ║
+# ╚══════════════════════════════════════════════════════════════════╝
 
 Nx = 128
-rec_scheme = "weno5z"  # "muscl2" or "weno5z"
+rec_scheme = "muscl2"  # "muscl2" or "weno5z"
 
-fv = {"muscl2": FVUni2nd1D, "weno5z": FVUniWENO5Z1D}[rec_scheme](nx=Nx)
-ev = AdvReactUni1DEval(
-    fv=fv,
-    model="bistable",
-    params={"a": 0.5, "k": 1000},
-)
-# solver = AdvReactUni1DSolver(eval=ev, ode=ESDIRK("BackwardEuler"))
-solver = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
+# ═══════════════════════════════════════════════════════════════════
 
-dt = 1 / Nx * 0.5 * 1
+fv = TC.make_fv(rec_scheme, Nx)
+
+ev_params = dict(model="bistable", params={"a": 0.5, "k": 1000})
+ev = TC.make_ev(fv, **ev_params)
+ev_ps = TC.make_ev(fv, **ev_params, source_quadrature=3)
+
+solver_sets = {
+    "": TC.SolverSet(ev),
+    " p-source": TC.SolverSet(ev_ps),
+}
+
+dt = 1 / Nx * 0.5
 tEnd = 0.5
+u0 = np.array([np.sin(fv.xcs * np.pi * 2)]) * 0.5 + 1
 
-u = np.array([np.sin(fv.xcs * np.pi * 2)]) * 0.5 + 1
+enabled_methods = [
+    "DITR U2R2",
+    "DITR U2R1",
+    "DITR U2R2 p-source",
+    "DITR U2R1 p-source",
+]
 
-# u1 = solver.stepInterval(dt, u, 0.0, tEnd)
-
-solverDITR = AdvReactUni1DSolver(eval=ev, ode=DITRExp())
-
-u1Ditr = solverDITR.stepInterval(
-    dt,
-    u,
-    0.0,
-    tEnd,
-    solve_opts={
-        "rel_tol": 1e-4,
-        "CFL": 10,
-    },
-    use_exp=True,
+runners = TC.build_method_runners(
+    solver_sets, dt, dt, u0, tEnd,
+    CFL_ref=10, CFL_coarse=10, rel_tol=1e-4,
+    record_probes=False,
 )
+results, _ = TC.run_methods(runners, enabled_methods)

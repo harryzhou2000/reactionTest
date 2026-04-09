@@ -65,6 +65,7 @@ where `Ze = E / (R * Tb)` is the Zeldovich number. The sources are:
     S_Y = -omega          (fuel consumption)
 
 Parameters (key in `params` dict):
+
 - `B` -- pre-exponential factor (reaction time scale).
 - `Q_div_rho_cp` -- heat release per unit fuel, expressed as temperature rise.
 - `Tb` -- burnt (adiabatic flame) temperature.
@@ -101,6 +102,7 @@ Central-difference stencil: `eps * (u[i-1] - 2*u[i] + u[i+1]) / hx^2`.
 The diffusion coefficient `eps` is per-component, stored as shape
 `(nVars, 1)` in `AdvReactUni1DEval.eps`. It is set via the `"eps"` key
 in `params`:
+
 - Scalar: broadcast to all components.
 - Array `[eps_0, eps_1, ...]`: one value per variable. Pass `nVars=`
   to the constructor so the broadcast is correct.
@@ -144,6 +146,7 @@ Jacobian into `exp(A*dt)` and phi-functions.
 ### Splitting Modes
 
 `stepInterval()` supports three modes:
+
 - `"full"` -- monolithic: flow and source coupled in one implicit system.
 - `"strang"` -- Strang splitting: half-flow, source, half-flow.
 - `"embed"` -- embedded splitting: source sub-steps at each RK stage
@@ -153,6 +156,7 @@ Jacobian into `exp(A*dt)` and phi-functions.
 
 The implicit stage solve uses pseudo-time relaxation. The pseudo-time
 step is `dTau = CFL * dt_char`, where `dt_char` is the minimum of:
+
 - `hx / |ax|` (advection CFL limit, skipped when `ax = 0`)
 - `hx^2 / max(eps)` (diffusion CFL limit, skipped when `eps = 0`)
 
