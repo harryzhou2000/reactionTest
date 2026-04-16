@@ -16,11 +16,13 @@ if TYPE_CHECKING:
 class Frhs(ODE.ODE_F_RHS):
     """RHS functor for advection-reaction system."""
 
-    def __init__(self, eval: AdvReactUni1DEval, mode: str = "full"):
+    def __init__(self, eval: AdvReactUni1DEval, mode: str = "full",
+                 chi_split: np.ndarray = None):
         super().__init__()
         self.eval = eval
         self.mode = mode
-        if mode not in {"full", "flow", "source"}:
+        self.chi_split = chi_split  # (nx,) array or None
+        if mode not in {"full", "flow", "source", "masked_implicit", "masked_split"}:
             raise ValueError("mode not valid")
 
     def __call__(self, u, cStage, iStage):
@@ -30,6 +32,22 @@ class Frhs(ODE.ODE_F_RHS):
             return self.eval.rhs_flow(u)
         elif self.mode == "source":
             return self.eval.rhs_source(u)
+        elif self.mode == "masked_implicit":
+            # F(u) + (1 - chi_split) * S(u)
+            flow = self.eval.rhs_flow(u)
+            source = self.eval.rhs_source(u)
+            if self.chi_split is None:
+                return flow + source
+            # chi_split is (nx,), broadcast to (nVars, nx)
+            chi = self.chi_split[np.newaxis, :]
+            return flow + (1.0 - chi) * source
+        elif self.mode == "masked_split":
+            # chi_split * S(u)
+            source = self.eval.rhs_source(u)
+            if self.chi_split is None:
+                return 0.0 * source
+            chi = self.chi_split[np.newaxis, :]
+            return chi * source
         else:
             raise ValueError()
 
@@ -53,19 +71,24 @@ class Fsolve(ODE.ODE_F_SOLVE_SingleStage):
         eval: AdvReactUni1DEval,
         CFL: float = 10,
         rel_tol: float = 1e-4,
+        rel_tol_rhs: float = None,
         max_iter: int = 1000,
         n_print: int = 10,
         mode: str = "full",
+        chi_split: np.ndarray = None,
     ):
         super().__init__()
         self.eval = eval
         self.CFL = CFL
         self.rel_tol = rel_tol
+        self.rel_tol_rhs = rel_tol_rhs if rel_tol_rhs is not None else 0.1 * rel_tol
         self.max_iter = max_iter
         self.n_print = n_print
         self.mode = mode
+        self.chi_split = chi_split  # (nx,) array or None
 
-        if mode not in {"full", "flow", "source", "full_split"}:
+        if mode not in {"full", "flow", "source", "full_split", "masked_implicit",
+                        "masked_split"}:
             raise ValueError("mode not valid")
 
     def __call__(
@@ -116,15 +139,66 @@ class Fsolve(ODE.ODE_F_SOLVE_SingleStage):
                     JDSource += 1 / (dTau) + 1 / dt
                 JDSourceInv = self.eval.invert_jacobian_diag(JDSource)
                 du = self.eval.jacobian_diag_mult(JDSourceInv, res)
+            elif self.mode == "masked_implicit":
+                # Jacobian for F(u) + (1 - chi_split) * S(u)
+                JDFlow = -alphaRHS * self.eval.rhs_flow_jacobian_diag(u)
+                JDFlow += 1 / (dTau) + 1 / dt
+                JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
+                # Scale source Jacobian by (1 - chi_split)
+                if self.chi_split is not None:
+                    chi = self.chi_split  # (nx,)
+                    one_minus_chi = 1.0 - chi
+                    if JDSource.ndim == 2:
+                        # (nVars, nx) * (nx,) broadcast
+                        JDSource = JDSource * one_minus_chi[np.newaxis, :]
+                    elif JDSource.ndim == 3:
+                        # (nVars, nVars, nx) * (nx,) broadcast
+                        JDSource = JDSource * one_minus_chi[np.newaxis, np.newaxis, :]
+                JDFlow = self.eval.add_jacobian_diags(JDFlow, JDSource)
+                JDFullInv = self.eval.invert_jacobian_diag(JDFlow)
+
+                for iJ in range(3):
+                    du = self.eval.rhs_flow_jacobian_jacobiIter(
+                        u, res, du, alphaRHS, JDFullInv
+                    )
+            elif self.mode == "masked_split":
+                # Jacobian for chi_split * S(u)
+                JDSource = -alphaRHS * self.eval.rhs_source_jacobian(u)
+                # Scale source Jacobian by chi_split
+                if self.chi_split is not None:
+                    chi = self.chi_split  # (nx,)
+                    if JDSource.ndim == 2:
+                        JDSource = JDSource * chi[np.newaxis, :]
+                    elif JDSource.ndim == 3:
+                        JDSource = JDSource * chi[np.newaxis, np.newaxis, :]
+                if JDSource.ndim == 3:
+                    nV = JDSource.shape[0]
+                    eyeNx = np.eye(nV).reshape(nV, nV, 1) * np.ones(
+                        (1, 1, JDSource.shape[2])
+                    )
+                    JDSource += (1 / (dTau) + 1 / dt) * eyeNx
+                else:
+                    JDSource += 1 / (dTau) + 1 / dt
+                JDSourceInv = self.eval.invert_jacobian_diag(JDSource)
+                du = self.eval.jacobian_diag_mult(JDSourceInv, res)
             else:
                 raise NotImplementedError()
             u += du
 
             resN = np.linalg.norm(res)
+            rhsN = np.linalg.norm(rhs)
+            duN = np.linalg.norm(du)
             if iter == 1:
                 resN0 = resN
             stop = False
-            if resN < self.rel_tol * resN0:
+            # Converged if:
+            # 1. Residual is small relative to initial residual, OR
+            # 2. Residual is small relative to RHS (handles zero initial residual), OR
+            # 3. Increment is at machine precision (absolute tolerance on du)
+            abs_tol = 1e-12
+            if (resN < self.rel_tol * resN0
+                or resN < self.rel_tol_rhs * (rhsN + 1e-300)
+                or duN < abs_tol):
                 stop = True
             if iter % self.n_print == 0 or stop:
                 print(
@@ -141,8 +215,9 @@ class Fsolve(ODE.ODE_F_SOLVE_SingleStage):
 class FrhsDITRExp(Frhs):
     """RHS functor with exponential Jacobian extraction for DITRExp."""
 
-    def __init__(self, eval: AdvReactUni1DEval, mode: str = "full"):
-        super().__init__(eval=eval, mode=mode)
+    def __init__(self, eval: AdvReactUni1DEval, mode: str = "full",
+                 chi_split: np.ndarray = None):
+        super().__init__(eval=eval, mode=mode, chi_split=chi_split)
         self.currentA = None
         self.currentU = None
         self._eigV = None
@@ -327,17 +402,21 @@ class FsolveDITR(Fsolve):
         eval: AdvReactUni1DEval,
         CFL: float = 10,
         rel_tol: float = 1e-4,
+        rel_tol_rhs: float = None,
         max_iter: int = 1000,
         n_print: int = 10,
         mode: str = "full",
+        chi_split: np.ndarray = None,
         **kwargs,
     ):
         super().__init__(
             eval=eval,
             CFL=CFL,
             rel_tol=rel_tol,
+            rel_tol_rhs=rel_tol_rhs,
             max_iter=max_iter,
             n_print=n_print,
+            chi_split=chi_split,
             **kwargs,
         )
 
@@ -345,6 +424,8 @@ class FsolveDITR(Fsolve):
             "full",
             "flow",
             "source",
+            "masked_implicit",
+            "masked_split",
         }:
             raise ValueError("mode not valid")
 
@@ -469,11 +550,20 @@ class FsolveDITR(Fsolve):
                 rhs[iStageI] = fRHS(u, cStageC, iStageC)
 
             resN = np.linalg.norm(res)
+            rhsN = np.linalg.norm(rhs[0]) + np.linalg.norm(rhs[1])
+            duN = np.linalg.norm(du)
             if iter == 1:
                 resN0 = resN
 
             stop = False
-            if resN < self.rel_tol * resN0:
+            # Converged if:
+            # 1. Residual is small relative to initial residual, OR
+            # 2. Residual is small relative to RHS (handles zero initial residual), OR
+            # 3. Increment is at machine precision (absolute tolerance on du)
+            abs_tol = 1e-12
+            if (resN < self.rel_tol * resN0
+                or resN < self.rel_tol_rhs * (rhsN + 1e-300)
+                or duN < abs_tol):
                 stop = True
             if iter % self.n_print == 0 or stop:
                 print(

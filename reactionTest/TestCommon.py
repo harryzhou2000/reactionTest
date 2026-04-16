@@ -61,9 +61,12 @@ class SolverSet:
     Probe locations are applied to each solver as it is created.
     """
 
-    def __init__(self, ev: AdvReactUni1DEval, probe_locations: list = []):
+    def __init__(self, ev: AdvReactUni1DEval, probe_locations: list = [],
+                 chi_split_threshold: float = None, chi_split_width: float = 0.5):
         self._ev = ev
         self._probe_locations = list(probe_locations)
+        self._chi_split_threshold = chi_split_threshold
+        self._chi_split_width = chi_split_width
         self._solvers = {}
 
     def __getitem__(self, key: str) -> AdvReactUni1DSolver:
@@ -75,7 +78,11 @@ class SolverSet:
                     break
             if ode_ctor is None:
                 raise KeyError(f"Unknown solver key: {key!r}")
-            s = AdvReactUni1DSolver(eval=self._ev, ode=ode_ctor())
+            s = AdvReactUni1DSolver(
+                eval=self._ev, ode=ode_ctor(),
+                chi_split_threshold=self._chi_split_threshold,
+                chi_split_width=self._chi_split_width,
+            )
             if self._probe_locations:
                 s.set_probes(self._probe_locations)
             self._solvers[key] = s
@@ -125,6 +132,13 @@ def _add_runners_for_solver_set(runners, ss: SolverSet, suffix: str,
         ),
         lambda _ss=ss: _ss["esdirk3"],
     )
+    runners["Masked Strang ESDIRK3" + suffix] = (
+        lambda _ss=ss: _ss["esdirk3"].stepInterval(
+            dt, u0, 0.0, tEnd, mode="masked_strang",
+            solve_opts={"CFL": CFL_coarse}, record_probes=rp,
+        ),
+        lambda _ss=ss: _ss["esdirk3"],
+    )
     runners["Embed ESDIRK3" + suffix] = (
         lambda _ss=ss: _ss["esdirk3"].stepInterval(
             dt, u0, 0.0, tEnd, mode="embed",
@@ -145,6 +159,14 @@ def _add_runners_for_solver_set(runners, ss: SolverSet, suffix: str,
         runners["Strang " + dk + suffix] = (
             lambda _ss=ss, _dk=dk: _ss[_dk].stepInterval(
                 dt, u0, 0.0, tEnd, mode="strang",
+                solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+                record_probes=rp,
+            ),
+            lambda _ss=ss, _dk=dk: _ss[_dk],
+        )
+        runners["Masked Strang " + dk + suffix] = (
+            lambda _ss=ss, _dk=dk: _ss[_dk].stepInterval(
+                dt, u0, 0.0, tEnd, mode="masked_strang",
                 solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
                 record_probes=rp,
             ),
@@ -413,3 +435,66 @@ def plot_probes(probe_results, probe_locations, enabled_methods,
                 dpi=180, bbox_inches="tight",
             )
             plt.show()
+
+
+# ── Chi split plotting ─────────────────────────────────────────────
+
+def plot_chi_split(fv, ev, results, enabled_methods, dt, tag, pic_dir, fmt_fig,
+                   chi_split_threshold=1.0, chi_split_width=0.5,
+                   plotEnv=None, fig_start=500, show_title=True, xlim=None):
+    """Plot chi_split at the final state for Masked Strang methods.
+
+    Args:
+        fv: Finite volume grid object.
+        ev: Evaluator with compute_chi_split method.
+        results: Dict mapping method name to final solution.
+        enabled_methods: List of method names to consider.
+        dt: Time step size used for chi_split computation.
+        tag: Tag string for output filename.
+        pic_dir: Output directory path.
+        fmt_fig: Figure format (e.g., "pdf", "png").
+        chi_split_threshold: Threshold parameter for compute_chi_split.
+        chi_split_width: Width parameter for compute_chi_split.
+        plotEnv: Optional PlotEnv instance.
+        fig_start: Starting figure number.
+        show_title: Whether to show plot title.
+        xlim: Optional x-axis limits.
+    """
+    masked_methods = [m for m in enabled_methods if "Masked Strang" in m]
+    if not masked_methods:
+        return
+
+    if plotEnv is None:
+        plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=max(1, fv.nx // 20))
+
+    fig = plotEnv.figure(fig_start, figsize=(6, 4))
+    plt.clf()  # Clear the figure to avoid overlapping with previous plots
+
+    for i, name in enumerate(masked_methods):
+        sol = results.get(name)
+        if sol is not None:
+            chi_split = ev.compute_chi_split(
+                sol, dt, threshold=chi_split_threshold, width=chi_split_width
+            )
+            plt.plot(fv.xcs, chi_split, label=name,
+                     lw=plotEnv.lwc,
+                     marker=plotEnv.markerList[i % len(plotEnv.markerList)],
+                     markevery=max(1, fv.nx // 20),
+                     markersize=plotEnv.msc,
+                     markeredgewidth=plotEnv.lwc,
+                     markerfacecolor="none",
+                     color=plotEnv.color_seq[i % len(plotEnv.color_seq)])
+
+    plt.legend(fontsize=7, frameon=True, framealpha=0.55)
+    if show_title:
+        plt.title(r"$\chi_{\mathrm{split}}$ at final state")
+    plt.xlabel(r"$x$")
+    plt.ylabel(r"$\chi_{\mathrm{split}}$")
+    plt.ylim([-0.05, 1.05])
+    if xlim is not None:
+        plt.xlim(xlim)
+
+    outpath = pic_dir / f"{tag}_chi_split.{fmt_fig}"
+    plt.savefig(outpath, dpi=180, bbox_inches="tight")
+    plt.show()
+    print(f"  chi_split plot saved to {outpath}")

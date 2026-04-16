@@ -28,7 +28,7 @@ import TestCommon as TC
 # Grid
 Nx = 256
 rec_scheme = "weno5z"  # "muscl2" or "weno5z"
-fmt_fig = "pdf"  # output figure format: "pdf", "png", etc.
+fmt_fig = "png"  # output figure format: "pdf", "png", etc.
 show_title = False  # show titles on plots
 
 Da = 1e2
@@ -64,16 +64,20 @@ max_iter_exp = 50
 
 ref_suffix = " p-source"  # "" = base evaluator, " p-source" = quadrature source for ref
 # ref_suffix = ""
+chi_split_width = 0.5
+chi_split_threshold = 1
 
 # Methods to run
 enabled_methods = [
     "ref",
     "DITR U2R2",
-    "DITR U2R1",
-    "ESDIRK3",
-    "ESDIRK4",
-    "Strang ESDIRK3",
-    "Strang DITR U2R2",
+    # "DITR U2R1",
+    # "ESDIRK3",
+    # "ESDIRK4",
+    # "Strang ESDIRK3",
+    # "Strang DITR U2R2",
+    "Masked Strang ESDIRK3",
+    "Masked Strang DITR U2R2",
     # "Strang DITR U2R1",
     # "DITR U2R2 p-source",
     # "Strang DITR U2R2 p-source",
@@ -122,8 +126,25 @@ ev = TC.make_ev(fv, **ev_params)
 ev_ps = TC.make_ev(fv, **ev_params, source_quadrature=3)
 
 solver_sets = {
-    "": TC.SolverSet(ev, probe_locations),
-    " p-source": TC.SolverSet(ev_ps, probe_locations),
+    "": TC.SolverSet(
+        ev,
+        probe_locations,
+        chi_split_width=chi_split_width,
+        chi_split_threshold=chi_split_threshold,
+    ),
+    " p-source": TC.SolverSet(
+        ev_ps,
+        probe_locations,
+        chi_split_width=chi_split_width,
+        chi_split_threshold=chi_split_threshold,
+    ),
+    # chi=0 forced: use very large threshold so sigmoid always outputs ~0
+    " chi0": TC.SolverSet(
+        ev,
+        probe_locations,
+        chi_split_width=chi_split_width,
+        chi_split_threshold=1e10,
+    ),
 }
 
 # ── Initial condition: tanh jump ────────────────────────────────────
@@ -182,4 +203,10 @@ TC.plot_probes(
     show_title=show_title,
     xlim=xlim,
     ylim=ylim,
+)
+
+TC.plot_chi_split(
+    fv, ev, results, enabled_methods, dt, tag, pic_dir, fmt_fig,
+    chi_split_threshold=chi_split_threshold, chi_split_width=chi_split_width,
+    show_title=show_title, xlim=xlim,
 )

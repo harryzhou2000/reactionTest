@@ -12,8 +12,14 @@ import numpy as np
 
 
 class AdvReactUni1DEval:
-    def __init__(self, fv: FVUni1D, model: str = "", params={}, nVars: int = 1,
-                 source_quadrature: int = 0):
+    def __init__(
+        self,
+        fv: FVUni1D,
+        model: str = "",
+        params={},
+        nVars: int = 1,
+        source_quadrature: int = 0,
+    ):
         self.fv: FVUni1D = fv
 
         self.ax: float = 1.0
@@ -263,6 +269,183 @@ class AdvReactUni1DEval:
         J[1, 1] = -domega_dY[0]
         return J
 
+    def _get_u_ref(self, u: np.ndarray) -> np.ndarray:
+        """Return a model-dependent reference scale for the solution.
+
+        This reference is used to non-dimensionalise the source activity
+        indicator in compute_chi_split.  Currently returns 1.0 for all
+        models, but can be overridden per-model in the future.
+
+        Args:
+            u: Solution array of shape (nVars, nx).
+
+        Returns:
+            u_ref: Array of shape (nx,) with the reference scale per cell.
+        """
+        nVars, nx = self.fv.get_shape_u(u)
+        return np.ones(nx)
+
+    def _fd_hessian_source(self, u: np.ndarray) -> np.ndarray:
+        """Finite-difference approximation of the source Hessian dJ/du.
+
+        Returns a tensor H where H[..., i, :] ~= dJ/du_i.  The leading
+        dimensions match the Jacobian layout (scalar diagonal or dense
+        matrix).  Invalid entries (NaN/Inf) are zeroed out.
+
+        Args:
+            u: Solution array of shape (nVars, nx).
+
+        Returns:
+            H: Array of shape (nVars, nVars, nx) for scalar-diagonal J,
+               or (nVars, nVars, nVars, nx) for dense J.
+        """
+        JD = self.rhs_source_jacobian(u)
+        nVars, nx = self.fv.get_shape_u(u)
+        u_ref = self._get_u_ref(u)
+        eps = np.sqrt(np.finfo(float).eps)
+
+        if JD.ndim == 2:
+            H = np.zeros((nVars, nVars, nx))
+            for i in range(nVars):
+                scale = np.maximum(np.abs(u[i]), u_ref) * eps
+                du = np.zeros_like(u)
+                du[i] = scale
+                JD_pert = self.rhs_source_jacobian(u + du)
+                dJ = (JD_pert - JD) / (scale + 1e-300)
+                H[:, i, :] = dJ
+        elif JD.ndim == 3:
+            H = np.zeros((nVars, nVars, nVars, nx))
+            for i in range(nVars):
+                scale = np.maximum(np.abs(u[i]), u_ref) * eps
+                du = np.zeros_like(u)
+                du[i] = scale
+                JD_pert = self.rhs_source_jacobian(u + du)
+                dJ = (JD_pert - JD) / (scale + 1e-300)
+                H[:, :, i, :] = dJ
+        else:
+            return np.array([])
+
+        # Filter invalid ranges
+        H = np.where(np.isfinite(H), H, 0.0)
+        return H
+
+    def compute_chi_split(
+        self,
+        u: np.ndarray,
+        dt: float,
+        threshold: float = 1.0,
+        width: float = 0.5,
+        transition="inv",
+        smooth_steps=0,
+        smooth_ratio=0.5,
+    ) -> np.ndarray:
+        """Compute per-cell splitting mask chi_split based on source stiffness.
+
+        chi_split = 1 where source is stiff (tau_source << dt), meaning the
+        source should be split out and solved separately.
+        chi_split = 0 where source is slow (tau_source >= dt), meaning the
+        source can be handled implicitly with the flow.
+
+        The stiffness indicator combines four measures and takes the maximum:
+            stiffness_ratio = max( |lambda_max(J)| * dt,
+                                   |S(u)| / u_ref * dt,
+                                   |J(u)*S(u)| / |S(u)| * dt,
+                                   ||dJ/du||_F * |S(u)| * dt^2 )
+
+        where |.| denotes the vector 2-norm per cell, |lambda_max(J)| is the
+        spectral radius of the source Jacobian, and u_ref is a model-dependent
+        reference scale returned by _get_u_ref(u).
+
+        The mask uses a smooth sigmoid transition:
+            chi_split = sigmoid((stiffness_ratio - threshold) / width)
+
+        Args:
+            u: Solution array of shape (nVars, nx).
+            dt: Time step size.
+            threshold: Stiffness ratio at which chi_split = 0.5.
+                       Default 1.0 means transition when stiffness_ratio ~ 1.
+            width: Width of the sigmoid transition. Smaller = sharper.
+                   Default 0.5 for smooth blending.
+
+        Returns:
+            chi_split: Array of shape (nx,) with values in [0, 1].
+        """
+        JD = self.rhs_source_jacobian(u)
+        nVars, nx = self.fv.get_shape_u(u)
+
+        if JD.ndim == 2:
+            jac_norm = np.linalg.norm(JD, axis=0)  # (nx,)
+        elif JD.ndim == 3:
+            jac_norm = np.linalg.norm(JD, axis=(0, 1))  # (nx,)
+        else:
+            return np.zeros(nx)
+
+        # Combined stiffness indicator
+        rhs = self._rhs_source_raw(u)
+        rhs_norm = np.linalg.norm(rhs, axis=0)
+
+        stiffness_ratio = np.empty(nx)
+        stiffness_ratio[:] = -1e300
+
+        # # 1. Linear spectral indicator (Frobenius norm of Jacobian)
+        # stiffness_ratio = np.log10(jac_norm * dt)  # (nx,)
+
+        # # 2. Source activity indicator: |S| / u_ref
+        # u_ref = self._get_u_ref(u)
+        # source_activity = np.log10(rhs_norm / u_ref * dt)
+        # source_activity = source_activity / 0.01
+        # stiffness_ratio = np.maximum(stiffness_ratio, source_activity)
+        # # print(source_activity)
+        # # exit()
+
+        # 3. Source curvature indicator: |J @ S| / |S|
+        mask = rhs_norm > 1e-300
+        if np.any(mask):
+            if JD.ndim == 2:
+                J_dot_S = JD * rhs
+            elif JD.ndim == 3:
+                J_dot_S = np.einsum('ijv,jv->iv', JD, rhs)
+            J_dot_S_norm = np.linalg.norm(J_dot_S, axis=0)
+            source_curvature = np.zeros(nx)
+            source_curvature[mask] = np.log10(J_dot_S_norm[mask] / rhs_norm[mask] * dt)
+            stiffness_ratio = np.maximum(stiffness_ratio, source_curvature)
+
+        # # 4. Hessian nonlinearity indicator: ||dJ/du||_F * |S| * dt^2
+        # H = self._fd_hessian_source(u)
+        # if H.size > 0:
+        #     hessian_norm = np.sqrt(np.sum(H ** 2, axis=tuple(range(H.ndim - 1))))
+        #     hessian_indicator = hessian_norm * rhs_norm * dt ** 2
+        #     # Filter invalid ranges
+        #     hessian_indicator = np.where(np.isfinite(hessian_indicator),
+        #                                  hessian_indicator, 0.0)
+        #     stiffness_ratio = np.maximum(stiffness_ratio, hessian_indicator)
+
+        arg = (stiffness_ratio - threshold) / width
+
+        if transition == "inv":
+            chi_split = np.clip(arg, 0.0, 1e300)
+            chi_split = chi_split / (1.0 + chi_split)
+        elif transition == "sigmoid":
+            arg = np.clip(arg, -50, 50)
+            chi_split = 1.0 / (1.0 + np.exp(-arg))
+        elif transition == "linear":
+            chi_split = np.clip(arg, 0.0, 1.0)
+        else:
+            raise ValueError(f"Unknown transition type: {transition}")
+
+        for i in range(smooth_steps):
+            chi_l = np.roll(chi_split, +1, 0) * smooth_ratio
+            chi_r = np.roll(chi_split, -1, 0) * smooth_ratio
+            if self.fv.bcL is not None:
+                chi_l[0] = 0
+                chi_r[0] = 0
+            if self.fv.bcR is not None:
+                chi_l[-1] = 0
+                chi_r[-1] = 0
+            chi_split = np.maximum.reduce((chi_l, chi_r, chi_split))
+
+        return chi_split
+
     def invert_jacobian_diag(self, JD: np.ndarray):
         badShape = ValueError("Jacobian Diag shape not valid: " + f"{JD.shape}")
         if JD.ndim == 2:
@@ -311,11 +494,25 @@ class AdvReactUni1DEval:
 
 class AdvReactUni1DSolver:
     def __init__(
-        self, eval: AdvReactUni1DEval, ode: ODE.ImplicitOdeIntegrator, N_react: int = 10
+        self,
+        eval: AdvReactUni1DEval,
+        ode: ODE.ImplicitOdeIntegrator,
+        N_react: int = 4,
+        chi_split_threshold: float = None,
+        chi_split_width: float = None,
     ):
         self.eval = eval
         self.ode = ode
         self.N_react = N_react
+
+        if chi_split_threshold is None:
+            chi_split_threshold = 10
+        if chi_split_width is None:
+            chi_split_width = 0.5
+
+        # Masked Strang parameters for chi_split computation
+        self.chi_split_threshold = chi_split_threshold
+        self.chi_split_width = chi_split_width
 
         # Probe storage: list of x locations to record
         self._probe_xs = []
@@ -369,6 +566,7 @@ class AdvReactUni1DSolver:
             subsequent clear_probes() calls.
         """
         import copy
+
         if x is not None:
             data = self._probe_data.get(x, None)
             return copy.deepcopy(data)
@@ -382,6 +580,7 @@ class AdvReactUni1DSolver:
         use_exp=False,
         solve_opts={},
         uForce=lambda c2: 0.0,
+        chi_split: np.ndarray = None,
     ):
         mode_frhs = mode
         mode_fsolve = mode
@@ -390,18 +589,20 @@ class AdvReactUni1DSolver:
                 dt,
                 u,
                 (
-                    self.FrhsDITRExp(self.eval, mode=mode_frhs)
+                    self.FrhsDITRExp(self.eval, mode=mode_frhs, chi_split=chi_split)
                     if use_exp
-                    else self.Frhs(self.eval, mode=mode_frhs)
+                    else self.Frhs(self.eval, mode=mode_frhs, chi_split=chi_split)
                 ),
-                self.FsolveDITR(self.eval, mode=mode_fsolve, **solve_opts),
+                self.FsolveDITR(
+                    self.eval, mode=mode_fsolve, chi_split=chi_split, **solve_opts
+                ),
                 fForce=uForce,
             )
         return self.ode.step(
             dt,
             u,
-            self.Frhs(self.eval, mode=mode_frhs),
-            self.Fsolve(self.eval, mode=mode_fsolve, **solve_opts),
+            self.Frhs(self.eval, mode=mode_frhs, chi_split=chi_split),
+            self.Fsolve(self.eval, mode=mode_fsolve, chi_split=chi_split, **solve_opts),
             fForce=uForce,
         )
 
@@ -470,6 +671,45 @@ class AdvReactUni1DSolver:
                     solve_opts=solve_opts,
                     uForce=lambda c2: (uForces[c2] - uForces[cs[0]]) / dtC,
                 )
+            elif mode == "masked_strang":
+                # Masked Strang: source-flow-source with per-cell adaptive mask
+                # chi_split = 1 where stiff (split out), chi_split = 0 where slow (implicit)
+                N_react = self.N_react
+                chi_split = self.eval.compute_chi_split(
+                    u,
+                    dtC,
+                    threshold=self.chi_split_threshold,
+                    width=self.chi_split_width,
+                )
+
+                # Half-step: solve chi_split * S(u) via sub-stepping
+                for i_react in range(N_react):
+                    u = self.step(
+                        dtC * 0.5 / N_react,
+                        u,
+                        mode="masked_split",
+                        solve_opts=solve_opts,
+                        chi_split=chi_split,
+                    )
+
+                # Full-step: implicit solve of F(u) + (1 - chi_split) * S(u)
+                u = self.step(
+                    dtC,
+                    u,
+                    mode="masked_implicit",
+                    solve_opts=solve_opts,
+                    chi_split=chi_split,
+                )
+
+                # Half-step: solve chi_split * S(u) via sub-stepping
+                for i_react in range(N_react):
+                    u = self.step(
+                        dtC * 0.5 / N_react,
+                        u,
+                        mode="masked_split",
+                        solve_opts=solve_opts,
+                        chi_split=chi_split,
+                    )
 
             t = tNew
 

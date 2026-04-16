@@ -1,0 +1,14 @@
+\begin{table}[htb]
+	\centering
+	\caption{}
+	\label{tab:REACT_brusselator_k50_CFL1_T0.4_weno5z}
+	\begin{tabular}{lc}
+		\toprule
+		方法 & $L_2$ 误差 \\
+		\midrule
+		DITR U2R2 & $1.124 \times 10^{-2}$ \\
+		Masked Strang ESDIRK3 & $6.175 \times 10^{-1}$ \\
+		Masked Strang DITR U2R2 & $1.784 \times 10^{-2}$ \\
+		\bottomrule
+	\end{tabular}
+\end{table}

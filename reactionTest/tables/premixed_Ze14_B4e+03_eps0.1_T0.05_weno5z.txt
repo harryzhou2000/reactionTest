@@ -6,12 +6,9 @@
 		\toprule
 		方法 & $L_2$ 误差 \\
 		\midrule
-		DITR U2R2 & $6.586 \times 10^{-4}$ \\
-		DITR U2R1 & $1.746 \times 10^{-3}$ \\
-		ESDIRK3 & $1.838 \times 10^{-4}$ \\
-		ESDIRK4 & $3.965 \times 10^{-4}$ \\
-		Strang ESDIRK3 & $1.170 \times 10^{-1}$ \\
-		Strang DITR U2R2 & $1.526 \times 10^{-1}$ \\
+		DITR U2R2 & $6.617 \times 10^{-4}$ \\
+		Masked Strang ESDIRK3 & $7.470 \times 10^{-3}$ \\
+		Masked Strang DITR U2R2 & $8.220 \times 10^{-3}$ \\
 		\bottomrule
 	\end{tabular}
 \end{table}
