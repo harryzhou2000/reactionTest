@@ -110,6 +110,14 @@ def _add_runners_for_solver_set(runners, ss: SolverSet, suffix: str,
         ),
         lambda _ss=ss: _ss["esdirk3"],
     )
+    runners["ESDIRK4" + suffix] = (
+        lambda _ss=ss: _ss["esdirk4"].stepInterval(
+            dt, u0, 0.0, tEnd, mode="full",
+            solve_opts={"rel_tol": rel_tol, "CFL": CFL_coarse},
+            record_probes=rp,
+        ),
+        lambda _ss=ss: _ss["esdirk4"],
+    )
     runners["Strang ESDIRK3" + suffix] = (
         lambda _ss=ss: _ss["esdirk3"].stepInterval(
             dt, u0, 0.0, tEnd, mode="strang",
@@ -314,12 +322,25 @@ def write_latex_errors(results: dict, enabled_methods: list, tag: str):
 
 # ── Spatial profile plotting ───────────────────────────────────────
 
-def _plot_method(plotEnv, x, y, i, name):
-    """Plot a single method's curve, using bold dashed style for 'ref'."""
+def _plot_method(plotEnv, x, y, i, name, markEvery=None):
+    """Plot a single method's curve, using bold dashed style for 'ref'.
+
+    When *markEvery* is given it overrides the plotEnv default for non-ref
+    lines (useful for probe time series where the point count varies).
+    """
     if name == "ref":
         plt.plot(x, y, label=name,
                  color=plotEnv.color_seq[i % len(plotEnv.color_seq)],
                  lw=plotEnv.lwc * 2.5, ls="--")
+    elif markEvery is not None and markEvery > 0:
+        plt.plot(x, y, label=name,
+                 lw=plotEnv.lwc,
+                 marker=plotEnv.markerList[i % len(plotEnv.markerList)],
+                 markevery=markEvery,
+                 markersize=plotEnv.msc,
+                 markeredgewidth=plotEnv.lwc,
+                 markerfacecolor="none",
+                 color=plotEnv.color_seq[i % len(plotEnv.color_seq)])
     else:
         plotEnv.plot(x, y, plotIndex=i, label=name)
 
@@ -338,7 +359,7 @@ def plot_profiles(fv, results, enabled_methods, var_names, title_base,
             sol = results.get(name)
             if sol is not None:
                 _plot_method(plotEnv, fv.xcs, sol[iVar], i, name)
-        plt.legend(fontsize=7)
+        plt.legend(fontsize=7, frameon=True, framealpha=0.55)
         if show_title:
             plt.title(title_base + f" {vname}"
                       + (" WENO5" if rec_scheme == "weno5z" else ""))
@@ -358,7 +379,7 @@ def plot_profiles(fv, results, enabled_methods, var_names, title_base,
 def plot_probes(probe_results, probe_locations, enabled_methods,
                 var_names, tag, pic_dir, fmt_fig, rec_scheme,
                 plotEnv=None, fig_start=300, show_title=True,
-                xlim=None, ylim=None):
+                xlim=None, ylim=None, max_markers=20):
     """Plot probe time series for each variable at each probe location."""
     if plotEnv is None:
         plotEnv = PlotEnv.PlotEnv(dpi=180, markEvery=0)
@@ -374,8 +395,10 @@ def plot_probes(probe_results, probe_locations, enabled_methods,
                     u_arr = np.array(pdata[x_probe]["u"])
                     if u_arr.ndim < 2:
                         continue
-                    _plot_method(plotEnv, t_arr, u_arr[:, iVar], i, name)
-            plt.legend(fontsize=7)
+                    me = max(1, len(t_arr) // max_markers)
+                    _plot_method(plotEnv, t_arr, u_arr[:, iVar], i, name,
+                                 markEvery=me)
+            plt.legend(fontsize=7, frameon=True, framealpha=0.55)
             if show_title:
                 plt.title(f"{vname} at x={x_probe:.2f}"
                           + (" WENO5" if rec_scheme == "weno5z" else ""))

@@ -9,7 +9,9 @@
 		DITR U2R2 & $2.686 \times 10^{-1}$ \\
 		DITR U2R1 & $5.008 \times 10^{-1}$ \\
 		ESDIRK3 & $6.777 \times 10^{-1}$ \\
-		Strang ESDIRK3 & $2.864 \times 10^{-1}$ \\
+		ESDIRK4 & $7.165 \times 10^{-2}$ \\
+		Strang ESDIRK3 & $1.624 \times 10^{-2}$ \\
+		Strang DITR U2R2 & $9.247 \times 10^{-3}$ \\
 		\bottomrule
 	\end{tabular}
 \end{table}

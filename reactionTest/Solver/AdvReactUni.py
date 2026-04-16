@@ -310,9 +310,12 @@ class AdvReactUni1DEval:
 
 
 class AdvReactUni1DSolver:
-    def __init__(self, eval: AdvReactUni1DEval, ode: ODE.ImplicitOdeIntegrator):
+    def __init__(
+        self, eval: AdvReactUni1DEval, ode: ODE.ImplicitOdeIntegrator, N_react: int = 10
+    ):
         self.eval = eval
         self.ode = ode
+        self.N_react = N_react
 
         # Probe storage: list of x locations to record
         self._probe_xs = []
@@ -435,16 +438,19 @@ class AdvReactUni1DSolver:
                     dtC, u, mode="full", use_exp=use_exp, solve_opts=solve_opts
                 )
             elif mode == "strang":
-                N_react = 2
-                u = self.step(dtC * 0.5, u, mode="flow", solve_opts=solve_opts)
+                N_react = self.N_react
                 for i_react in range(N_react):
                     u = self.step(
-                        dtC / N_react, u, mode="source", solve_opts=solve_opts
+                        dtC * 0.5 / N_react, u, mode="source", solve_opts=solve_opts
                     )
-                u = self.step(dtC * 0.5, u, mode="flow", solve_opts=solve_opts)
+                u = self.step(dtC, u, mode="flow", solve_opts=solve_opts)
+                for i_react in range(N_react):
+                    u = self.step(
+                        dtC * 0.5 / N_react, u, mode="source", solve_opts=solve_opts
+                    )
             elif mode == "embed":
                 cs = self.ode.get_cs()
-                N_react = 2
+                N_react = self.N_react
                 u_cur = u.copy()
                 assert cs[0] == 0, "cs must start with 0"
                 c_cur = cs[0]
