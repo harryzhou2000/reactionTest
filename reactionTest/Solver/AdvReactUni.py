@@ -333,8 +333,8 @@ class AdvReactUni1DEval:
         self,
         u: np.ndarray,
         dt: float,
-        threshold: float = 1.0,
-        width: float = 0.5,
+        threshold: float = 0.27,
+        width: float = 0.03,
         transition="inv",
         smooth_steps=0,
         smooth_ratio=0.5,
@@ -346,26 +346,23 @@ class AdvReactUni1DEval:
         chi_split = 0 where source is slow (tau_source >= dt), meaning the
         source can be handled implicitly with the flow.
 
-        The stiffness indicator combines four measures and takes the maximum:
-            stiffness_ratio = max( |lambda_max(J)| * dt,
-                                   |S(u)| / u_ref * dt,
-                                   |J(u)*S(u)| / |S(u)| * dt,
-                                   ||dJ/du||_F * |S(u)| * dt^2 )
-
-        where |.| denotes the vector 2-norm per cell, |lambda_max(J)| is the
-        spectral radius of the source Jacobian, and u_ref is a model-dependent
-        reference scale returned by _get_u_ref(u).
-
-        The mask uses a smooth sigmoid transition:
-            chi_split = sigmoid((stiffness_ratio - threshold) / width)
+        The indicator combines:
+            * bandpass on lambda_max * dt
+            * H/J penalty (log10(H_norm/J_norm) threshold)
+            * spatial gradient penalty on lambda_max
+            * low-Hessian penalty for scalar systems
+            * absolute Hessian penalty (H_norm > 800)
+            * oscillation boost for complex eigenvalue systems
+            * max-filter on the indicator value (w=2)
+            * chi hole-filling max-filter (w=2)
 
         Args:
             u: Solution array of shape (nVars, nx).
             dt: Time step size.
             threshold: Stiffness ratio at which chi_split = 0.5.
-                       Default 1.0 means transition when stiffness_ratio ~ 1.
-            width: Width of the sigmoid transition. Smaller = sharper.
-                   Default 0.5 for smooth blending.
+                       Default 0.27 for the universal indicator.
+            width: Width of the transition. Smaller = sharper.
+                   Default 0.03.
 
         Returns:
             chi_split: Array of shape (nx,) with values in [0, 1].
@@ -374,77 +371,112 @@ class AdvReactUni1DEval:
         nVars, nx = self.fv.get_shape_u(u)
 
         if JD.ndim == 2:
-            jac_norm = np.linalg.norm(JD, axis=0)  # (nx,)
+            lambda_max = np.max(np.abs(JD), axis=0)  # (nx,)
+            J_norm = np.linalg.norm(JD, axis=0)
         elif JD.ndim == 3:
-            jac_norm = np.linalg.norm(JD, axis=(0, 1))  # (nx,)
+            lambda_max = np.zeros(nx)
+            for ix in range(nx):
+                lambda_max[ix] = np.max(np.abs(np.linalg.eigvals(JD[:, :, ix])))
+            J_norm = np.linalg.norm(JD, axis=(0, 1))
         else:
             return np.zeros(nx)
 
-        # Combined stiffness indicator
-        rhs = self._rhs_source_raw(u)
-        rhs_norm = np.linalg.norm(rhs, axis=0)
-
-        stiffness_ratio = np.empty(nx)
-        stiffness_ratio[:] = -1e300
-
-        # # 1. Linear spectral indicator (Frobenius norm of Jacobian)
-        # stiffness_ratio = np.log10(jac_norm * dt)  # (nx,)
-
-        # # 2. Source activity indicator: |S| / u_ref
-        # u_ref = self._get_u_ref(u)
-        # source_activity = np.log10(rhs_norm / u_ref * dt)
-        # source_activity = source_activity / 0.01
-        # stiffness_ratio = np.maximum(stiffness_ratio, source_activity)
-        # # print(source_activity)
-        # # exit()
-
-        # 3. Source curvature indicator: |J @ S| / |S|
-        mask = rhs_norm > 1e-300
-        if np.any(mask):
+        H = self._fd_hessian_source(u)
+        if H.size > 0:
             if JD.ndim == 2:
-                J_dot_S = JD * rhs
-            elif JD.ndim == 3:
-                J_dot_S = np.einsum('ijv,jv->iv', JD, rhs)
-            J_dot_S_norm = np.linalg.norm(J_dot_S, axis=0)
-            source_curvature = np.zeros(nx)
-            source_curvature[mask] = np.log10(J_dot_S_norm[mask] / rhs_norm[mask] * dt)
-            stiffness_ratio = np.maximum(stiffness_ratio, source_curvature)
+                H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1)))
+            else:
+                H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1, 2)))
+        else:
+            H_norm = np.zeros(nx)
 
-        # # 4. Hessian nonlinearity indicator: ||dJ/du||_F * |S| * dt^2
-        # H = self._fd_hessian_source(u)
-        # if H.size > 0:
-        #     hessian_norm = np.sqrt(np.sum(H ** 2, axis=tuple(range(H.ndim - 1))))
-        #     hessian_indicator = hessian_norm * rhs_norm * dt ** 2
-        #     # Filter invalid ranges
-        #     hessian_indicator = np.where(np.isfinite(hessian_indicator),
-        #                                  hessian_indicator, 0.0)
-        #     stiffness_ratio = np.maximum(stiffness_ratio, hessian_indicator)
+        # H/J penalty
+        ratio = H_norm / (J_norm + 1e-300)
+        log_ratio = np.log10(ratio + 1e-300)
+        hj_thr = 0.9
+        hj_wid = 0.2
+        arg_hj = (log_ratio - hj_thr) / hj_wid
+        penalty_hj = np.clip(arg_hj, 0.0, 1e300)
+        penalty_hj = penalty_hj / (1.0 + penalty_hj)
 
-        arg = (stiffness_ratio - threshold) / width
+        # Spatial gradient penalty on lambda_max
+        dx = self.fv.hx
+        grad = np.abs(np.roll(lambda_max, -1) - np.roll(lambda_max, 1)) / (2 * dx)
+        rel_grad = grad / (lambda_max + 1e-300)
+        arg_g = (rel_grad - 30.0) / 40.0
+        grad_pen = np.clip(arg_g, 0.0, 1e300)
+        grad_pen = grad_pen / (1.0 + grad_pen)
+        penalty_grad = grad_pen
+
+        # Low-Hessian penalty for scalar systems
+        penalty_lowH = np.zeros(nx)
+        if JD.ndim == 2:
+            penalty_lowH = np.where(H_norm < 200.0, 1.0, 0.0)
+
+        # Absolute Hessian penalty (separates A from B)
+        penalty_highH = np.where(H_norm > 800.0, 1.0, 0.0)
+
+        penalty = np.maximum.reduce((penalty_hj, penalty_grad, penalty_lowH, penalty_highH))
+
+        # Bandpass indicator on lambda_max * dt (peaks at lambda*dt = 1)
+        x = lambda_max * dt
+        bp = x / (1.0 + x ** 2)
+
+        # Oscillation boost for 2x2 systems
+        osc_boost = 3.0
+        osc = np.zeros(nx)
+        if JD.ndim == 3:
+            for ix in range(nx):
+                J = JD[:, :, ix]
+                tr = J[0, 0] + J[1, 1]
+                det = J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0]
+                disc = tr ** 2 - 4 * det
+                if disc < 0:
+                    denom = tr ** 2 + 4 * abs(det)
+                    osc[ix] = -disc / denom if denom > 0 else 0.0
+
+        val = bp * (1.0 - penalty) * (1.0 + osc_boost * osc)
+
+        def _max_filter(v, w):
+            out = v.copy()
+            for i in range(-w, w + 1):
+                if i == 0:
+                    continue
+                out = np.maximum(out, np.roll(v, i))
+            return out
+
+        # Max-filter on val (spreads high values to neighboring cells)
+        val = _max_filter(val, 2)
+
+        arg = (val - threshold) / width
 
         if transition == "inv":
-            chi_split = np.clip(arg, 0.0, 1e300)
-            chi_split = chi_split / (1.0 + chi_split)
+            chi = np.clip(arg, 0.0, 1e300)
+            chi = chi / (1.0 + chi)
         elif transition == "sigmoid":
             arg = np.clip(arg, -50, 50)
-            chi_split = 1.0 / (1.0 + np.exp(-arg))
+            chi = 1.0 / (1.0 + np.exp(-arg))
         elif transition == "linear":
-            chi_split = np.clip(arg, 0.0, 1.0)
+            chi = np.clip(arg, 0.0, 1.0)
         else:
             raise ValueError(f"Unknown transition type: {transition}")
 
+        # Chi hole-filling max-filter (fills isolated low-chi cells)
+        for _ in range(2):
+            chi = _max_filter(chi, 1)
+
         for i in range(smooth_steps):
-            chi_l = np.roll(chi_split, +1, 0) * smooth_ratio
-            chi_r = np.roll(chi_split, -1, 0) * smooth_ratio
+            chi_l = np.roll(chi, +1, 0) * smooth_ratio
+            chi_r = np.roll(chi, -1, 0) * smooth_ratio
             if self.fv.bcL is not None:
                 chi_l[0] = 0
                 chi_r[0] = 0
             if self.fv.bcR is not None:
                 chi_l[-1] = 0
                 chi_r[-1] = 0
-            chi_split = np.maximum.reduce((chi_l, chi_r, chi_split))
+            chi = np.maximum.reduce((chi_l, chi_r, chi))
 
-        return chi_split
+        return chi
 
     def invert_jacobian_diag(self, JD: np.ndarray):
         badShape = ValueError("Jacobian Diag shape not valid: " + f"{JD.shape}")
@@ -506,9 +538,9 @@ class AdvReactUni1DSolver:
         self.N_react = N_react
 
         if chi_split_threshold is None:
-            chi_split_threshold = 10
+            chi_split_threshold = 0.27
         if chi_split_width is None:
-            chi_split_width = 0.5
+            chi_split_width = 0.03
 
         # Masked Strang parameters for chi_split computation
         self.chi_split_threshold = chi_split_threshold

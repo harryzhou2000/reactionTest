@@ -64,8 +64,8 @@ max_iter_exp = 50
 
 ref_suffix = " p-source"  # "" = base evaluator, " p-source" = quadrature source for ref
 # ref_suffix = ""
-chi_split_width = 0.5
-chi_split_threshold = 1
+chi_split_width = None
+chi_split_threshold = None
 
 # Methods to run
 enabled_methods = [

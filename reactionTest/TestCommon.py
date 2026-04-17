@@ -62,7 +62,7 @@ class SolverSet:
     """
 
     def __init__(self, ev: AdvReactUni1DEval, probe_locations: list = [],
-                 chi_split_threshold: float = None, chi_split_width: float = 0.5):
+                 chi_split_threshold: float = None, chi_split_width: float = None):
         self._ev = ev
         self._probe_locations = list(probe_locations)
         self._chi_split_threshold = chi_split_threshold
@@ -440,7 +440,7 @@ def plot_probes(probe_results, probe_locations, enabled_methods,
 # ── Chi split plotting ─────────────────────────────────────────────
 
 def plot_chi_split(fv, ev, results, enabled_methods, dt, tag, pic_dir, fmt_fig,
-                   chi_split_threshold=1.0, chi_split_width=0.5,
+                   chi_split_threshold=None, chi_split_width=None,
                    plotEnv=None, fig_start=500, show_title=True, xlim=None):
     """Plot chi_split at the final state for Masked Strang methods.
 
@@ -469,6 +469,11 @@ def plot_chi_split(fv, ev, results, enabled_methods, dt, tag, pic_dir, fmt_fig,
 
     fig = plotEnv.figure(fig_start, figsize=(6, 4))
     plt.clf()  # Clear the figure to avoid overlapping with previous plots
+
+    if chi_split_threshold is None:
+        chi_split_threshold = 0.2
+    if chi_split_width is None:
+        chi_split_width = 0.03
 
     for i, name in enumerate(masked_methods):
         sol = results.get(name)

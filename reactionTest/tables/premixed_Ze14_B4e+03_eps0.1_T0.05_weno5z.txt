@@ -7,8 +7,8 @@
 		方法 & $L_2$ 误差 \\
 		\midrule
 		DITR U2R2 & $6.617 \times 10^{-4}$ \\
-		Masked Strang ESDIRK3 & $7.470 \times 10^{-3}$ \\
-		Masked Strang DITR U2R2 & $8.220 \times 10^{-3}$ \\
+		Masked Strang ESDIRK3 & $4.293 \times 10^{-2}$ \\
+		Masked Strang DITR U2R2 & $4.363 \times 10^{-2}$ \\
 		\bottomrule
 	\end{tabular}
 \end{table}

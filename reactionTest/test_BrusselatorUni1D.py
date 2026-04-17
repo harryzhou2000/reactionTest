@@ -43,8 +43,8 @@ rel_tol = 1e-4
 max_iter_exp = 50  # max iterations for exponential DITR
 ref_suffix = " p-source"  # "" = base evaluator, " p-source" = quadrature source for ref
 # ref_suffix = ""
-chi_split_width = 0.5
-chi_split_threshold = 1
+chi_split_width = None
+chi_split_threshold = None
 
 # Methods to run
 enabled_methods = [
