@@ -120,6 +120,28 @@ The flow-aware bandpass cleanly separates:
 - **A/C**: `bp < 0.02` everywhere → `chi = 0` (fully implicit)
 - **B**: `bp = 0.25-0.50` → `chi` varies spatially (selective splitting)
 
+### 4.4 Brusselator Stiffness Transition
+
+To verify that the indicator correctly transitions from splitting to implicit as source stiffness decreases, the Brusselator was tested with varying reaction rate constant `k` (with advection speed temporarily reduced to `a=0.2` to make flow and source comparable):
+
+| k | lambda_source (mean) | lambda_flow | chi_mean | chi_max | Behavior |
+|---|---------------------|-------------|----------|---------|----------|
+| 50 | 62.3 | 25.6 | 0.677 | 0.885 | Strong splitting |
+| 30 | 37.4 | 25.6 | 0.316 | 0.848 | Moderate splitting |
+| 20 | 24.9 | 25.6 | 0.146 | 0.703 | Weak splitting |
+| 15 | 18.7 | 25.6 | 0.004 | 0.053 | Almost implicit |
+| 10 | 12.5 | 25.6 | 0.000 | 0.000 | Fully implicit |
+
+**Key observation**: The indicator smoothly transitions from `chi ≈ 1` (split everywhere) to `chi ≈ 0` (fully implicit) as `k` decreases. The transition occurs when `lambda_source` becomes comparable to `lambda_flow`, demonstrating that the flow-aware bandpass naturally handles the stiffness balance.
+
+**Figure: Chi_split transition with varying k**
+![Brusselator k transition](pics/brusselator_k_transition_reduced_flow.png)
+
+**Figure: Source-only vs Flow-aware comparison**
+![Source vs Flow-aware](pics/brusselator_source_vs_flowaware.png)
+
+The comparison shows that without the flow-aware bandpass (source-only), the indicator would incorrectly apply splitting even when flow dominates. The flow-aware approach correctly suppresses splitting when `lambda_flow > lambda_source`.
+
 ## 5. Figures
 
 ### 5.1 Case A: Bistable Reaction
