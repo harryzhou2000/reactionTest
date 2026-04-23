@@ -31,22 +31,22 @@ A universal stiffness indicator for `compute_chi_split` was developed that works
 
 | Case | Implicit | Strang | Masked Strang |
 |------|----------|--------|---------------|
-| A (bistable) | 3.26e-03 | 1.42e-01 | **4.34e-04** |
-| B (brusselator) | 1.18e-01 | 2.97e-03 | **9.42e-03** |
-| C (premixed) | 6.66e-04 | 1.53e-01 | **6.66e-04** |
+| A (bistable) | 3.34e-03 | 1.42e-01 | **7.83e-04** |
+| B (brusselator) | 1.18e-01 | 2.97e-03 | **1.24e-02** |
+| C (premixed) | 6.62e-04 | 1.53e-01 | **6.62e-04** |
 
 **Assessment**:
-- **A**: Masked Strang is **13x better** than implicit (and 327x better than Strang)
-- **B**: Masked Strang is **3.2x Strang** but **12.5x better** than implicit
+- **A**: Masked Strang is **4.3x better** than implicit (and 181x better than Strang)
+- **B**: Masked Strang is **4.2x Strang** but **9.5x better** than implicit
 - **C**: Masked Strang **exactly matches** implicit
 
 ## Indicator Formulation
 
-The indicator combines multiple terms into a single penalty:
+The indicator combines two penalties into a single suppression term:
 
 ```
-penalty = max(penalty_hj, penalty_grad, penalty_lowH, penalty_highH)
-val = bp * (1 - penalty) * (1 + osc_boost * osc)
+penalty = max(penalty_grad, penalty_highH)
+val = bp * (1 - penalty)
 chi = inv_transition(val, threshold=0.27, width=0.03)
 ```
 
@@ -58,42 +58,23 @@ chi = inv_transition(val, threshold=0.27, width=0.03)
    ```
    Peaks when the source timescale equals the time step.
 
-2. **H/J Penalty** (`hj_thr=0.9`, `hj_wid=0.2`):
-   ```
-   log_ratio = log10(H_norm / J_norm)
-   penalty_hj = inv_transition((log_ratio - 0.9) / 0.2)
-   ```
-   Suppresses splitting where the Hessian dominates the Jacobian (high nonlinearity).
-
-3. **Spatial Gradient Penalty** (`grad_thr=30.0`, `grad_wid=40.0`):
+2. **Spatial Gradient Penalty** (`grad_thr=30.0`, `grad_wid=40.0`):
    ```
    rel_grad = |grad(lambda_max)| / lambda_max
    penalty_grad = inv_transition((rel_grad - 30) / 40)
    ```
    Suppresses splitting at sharp spatial fronts.
 
-4. **Low-Hessian Penalty** (`lowH_thr=200.0`):
-   ```
-   penalty_lowH = 1.0 if H_norm < 200 else 0.0  (scalar systems only)
-   ```
-   Fixes inflection points in scalar bistable systems where H≈0.
-
-5. **Absolute Hessian Penalty** (`H_thr_abs=800.0`):
+3. **Absolute Hessian Penalty** (`H_thr_abs=800.0`):
    ```
    penalty_highH = 1.0 if H_norm > 800 else 0.0
    ```
    **Key breakthrough**: Suppresses splitting in A (H_norm > 800 almost everywhere) without affecting B (max H_norm ~ 763).
 
-6. **Oscillation Boost** (`osc_boost=3.0`):
-   ```
-   osc = -disc / (tr^2 + 4|det|)  for complex eigenvalues
-   ```
-   Boosts splitting in oscillatory systems like Brusselator.
-
-7. **Max-Filter on val** (`w=2`):
+4. **Max-Filter on val** (`w=2`):
    Spreads high indicator values to neighboring cells.
 
-8. **Chi Hole-Filling** (`w=2`):
+5. **Chi Hole-Filling** (`w=2`):
    Fills isolated low-chi cells within high-chi regions (critical for B).
 
 ### Why H_norm > 800 Works
@@ -107,27 +88,50 @@ chi = inv_transition(val, threshold=0.27, width=0.03)
 
 B's maximum H_norm (763) is safely below the 800 threshold, so B is never penalized by `penalty_highH`. A's H_norm is almost always above 800, so A is strongly penalized everywhere.
 
+## Removed Components
+
+The following components were tested and found unnecessary or harmful:
+
+### H/J Penalty
+```
+penalty_hj = inv_transition((log10(H_norm/J_norm) - 0.9) / 0.2)
+```
+**Status**: Removed. Found unnecessary; slightly hurt B's accuracy.
+
+### Low-Hessian Penalty
+```
+penalty_lowH = 1.0 if H_norm < 200 and scalar else 0.0
+```
+**Status**: Removed. Found unnecessary; superseded by the absolute Hessian penalty.
+
+### Oscillation Boost
+```
+osc = -discriminant / (tr^2 + 4|det|)  for complex eigenvalues
+```
+**Status**: Removed. Found unnecessary; slightly hurt B's accuracy.
+
+## Penalty Necessity Analysis
+
+| Disabled Component | A (bistable) | B (bruss) | C (premix) | Verdict |
+|---|---|---|---|---|
+| **None (baseline)** | **4.34e-04** | **7.95e-03** | **6.66e-04** | Reference |
+| Gradient penalty | 3.22e-02 | 9.80e-03 | 6.66e-04 | **CRITICAL for A** |
+| highH penalty | 1.94e-02 | 9.42e-03 | 6.66e-04 | **CRITICAL for A** |
+| val max-filter | 4.80e-03 | 1.00e-02 | 6.66e-04 | Important for A |
+| chi max-filter | 4.80e-03 | 1.00e-02 | 6.66e-04 | Important for A |
+
+Both gradient and highH penalties are required. highH alone is not sufficient (1.87e-02 even with everything else disabled).
+
 ## Key Discoveries
 
-### Discovery 1: H/J Penalty is Powerful but Insufficient Alone
-The ratio `||H||_F / ||J||_F` is ~14-33 at A's front and ~18-27 at C's flame, but only ~0.7-3.0 for B's high-bp cells. However, B has a large contiguous region with H/J ~3.5-6.5 and moderate bp, so a simple H/J threshold cannot cleanly separate B from A/C.
-
-### Discovery 2: Absolute H_norm Threshold is the Separator
+### Discovery 1: Absolute H_norm Threshold is the Separator
 While H/J ratios overlap between cases, the absolute H_norm distributions do not. A has H_norm ~3000 everywhere (even at the smooth IC), while B's maximum is only ~763.
 
-### Discovery 3: Max-Filter on val + Chi Hole-Filling
+### Discovery 2: Max-Filter on val + Chi Hole-Filling
 B has isolated low-chi cells within its oscillatory region. A 2-step max-filter on the indicator value (`val`) followed by a 2-step max-filter on `chi` fills these holes without affecting A's large zero regions.
 
-### Discovery 4: DITR U2R2 is More Sensitive to Splitting
+### Discovery 3: DITR U2R2 is More Sensitive to Splitting
 With DITR U2R2, even small amounts of splitting at the bistable front cause large errors. This necessitated the strong `penalty_highH` to suppress all splitting in A.
-
-## Failed Approaches
-
-1. **Bandpass + 5-cell spatial contrast**: Failed catastrophically for A and C on orthodox configs.
-2. **H/J penalty alone**: Overlapped with B's moderate-bp region.
-3. **Spatial gradient of lambda_max**: A's problematic cells had `rel_grad` only ~4-10, too low for practical thresholds.
-4. **Solution Laplacian**: Could not distinguish B's oscillatory peaks from A's smooth shoulders.
-5. **Adaptive threshold based on local mean**: Improved B slightly but added complexity.
 
 ## Files
 

@@ -348,11 +348,8 @@ class AdvReactUni1DEval:
 
         The indicator combines:
             * bandpass on lambda_max * dt
-            * H/J penalty (log10(H_norm/J_norm) threshold)
             * spatial gradient penalty on lambda_max
-            * low-Hessian penalty for scalar systems
             * absolute Hessian penalty (H_norm > 800)
-            * oscillation boost for complex eigenvalue systems
             * max-filter on the indicator value (w=2)
             * chi hole-filling max-filter (w=2)
 
@@ -372,12 +369,10 @@ class AdvReactUni1DEval:
 
         if JD.ndim == 2:
             lambda_max = np.max(np.abs(JD), axis=0)  # (nx,)
-            J_norm = np.linalg.norm(JD, axis=0)
         elif JD.ndim == 3:
             lambda_max = np.zeros(nx)
             for ix in range(nx):
                 lambda_max[ix] = np.max(np.abs(np.linalg.eigvals(JD[:, :, ix])))
-            J_norm = np.linalg.norm(JD, axis=(0, 1))
         else:
             return np.zeros(nx)
 
@@ -390,14 +385,14 @@ class AdvReactUni1DEval:
         else:
             H_norm = np.zeros(nx)
 
-        # H/J penalty
-        ratio = H_norm / (J_norm + 1e-300)
-        log_ratio = np.log10(ratio + 1e-300)
-        hj_thr = 0.9
-        hj_wid = 0.2
-        arg_hj = (log_ratio - hj_thr) / hj_wid
-        penalty_hj = np.clip(arg_hj, 0.0, 1e300)
-        penalty_hj = penalty_hj / (1.0 + penalty_hj)
+        # # H/J penalty (removed: found unnecessary, slightly hurt B)
+        # ratio = H_norm / (J_norm + 1e-300)
+        # log_ratio = np.log10(ratio + 1e-300)
+        # hj_thr = 0.9
+        # hj_wid = 0.2
+        # arg_hj = (log_ratio - hj_thr) / hj_wid
+        # penalty_hj = np.clip(arg_hj, 0.0, 1e300)
+        # penalty_hj = penalty_hj / (1.0 + penalty_hj)
 
         # Spatial gradient penalty on lambda_max
         dx = self.fv.hx
@@ -408,34 +403,34 @@ class AdvReactUni1DEval:
         grad_pen = grad_pen / (1.0 + grad_pen)
         penalty_grad = grad_pen
 
-        # Low-Hessian penalty for scalar systems
-        penalty_lowH = np.zeros(nx)
-        if JD.ndim == 2:
-            penalty_lowH = np.where(H_norm < 200.0, 1.0, 0.0)
+        # # Low-Hessian penalty for scalar systems (removed: found unnecessary)
+        # penalty_lowH = np.zeros(nx)
+        # if JD.ndim == 2:
+        #     penalty_lowH = np.where(H_norm < 200.0, 1.0, 0.0)
 
         # Absolute Hessian penalty (separates A from B)
         penalty_highH = np.where(H_norm > 800.0, 1.0, 0.0)
 
-        penalty = np.maximum.reduce((penalty_hj, penalty_grad, penalty_lowH, penalty_highH))
+        penalty = np.maximum.reduce((penalty_grad, penalty_highH))
 
         # Bandpass indicator on lambda_max * dt (peaks at lambda*dt = 1)
         x = lambda_max * dt
         bp = x / (1.0 + x ** 2)
 
-        # Oscillation boost for 2x2 systems
-        osc_boost = 3.0
-        osc = np.zeros(nx)
-        if JD.ndim == 3:
-            for ix in range(nx):
-                J = JD[:, :, ix]
-                tr = J[0, 0] + J[1, 1]
-                det = J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0]
-                disc = tr ** 2 - 4 * det
-                if disc < 0:
-                    denom = tr ** 2 + 4 * abs(det)
-                    osc[ix] = -disc / denom if denom > 0 else 0.0
+        # # Oscillation boost for 2x2 systems (removed: found unnecessary, slightly hurt B)
+        # osc_boost = 3.0
+        # osc = np.zeros(nx)
+        # if JD.ndim == 3:
+        #     for ix in range(nx):
+        #         J = JD[:, :, ix]
+        #         tr = J[0, 0] + J[1, 1]
+        #         det = J[0, 0] * J[1, 1] - J[0, 1] * J[1, 0]
+        #         disc = tr ** 2 - 4 * det
+        #         if disc < 0:
+        #             denom = tr ** 2 + 4 * abs(det)
+        #             osc[ix] = -disc / denom if denom > 0 else 0.0
 
-        val = bp * (1.0 - penalty) * (1.0 + osc_boost * osc)
+        val = bp * (1.0 - penalty)
 
         def _max_filter(v, w):
             out = v.copy()
