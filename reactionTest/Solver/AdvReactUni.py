@@ -347,9 +347,7 @@ class AdvReactUni1DEval:
         source can be handled implicitly with the flow.
 
         The indicator combines:
-            * bandpass on lambda_max * dt
-            * spatial gradient penalty on lambda_max
-            * absolute Hessian penalty (H_norm > 800)
+            * bandpass on max(source_lambda, flow_lambda) * dt
             * max-filter on the indicator value (w=2)
             * chi hole-filling max-filter (w=2)
 
@@ -368,22 +366,30 @@ class AdvReactUni1DEval:
         nVars, nx = self.fv.get_shape_u(u)
 
         if JD.ndim == 2:
-            lambda_max = np.max(np.abs(JD), axis=0)  # (nx,)
+            lambda_source = np.max(np.abs(JD), axis=0)  # (nx,)
         elif JD.ndim == 3:
-            lambda_max = np.zeros(nx)
+            lambda_source = np.zeros(nx)
             for ix in range(nx):
-                lambda_max[ix] = np.max(np.abs(np.linalg.eigvals(JD[:, :, ix])))
+                lambda_source[ix] = np.max(np.abs(np.linalg.eigvals(JD[:, :, ix])))
         else:
             return np.zeros(nx)
 
-        H = self._fd_hessian_source(u)
-        if H.size > 0:
-            if JD.ndim == 2:
-                H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1)))
-            else:
-                H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1, 2)))
+        # Include flow stiffness: lambda_max = max(source, flow)
+        JD_flow = self.rhs_flow_jacobian_diag(u)
+        if JD_flow.ndim == 2:
+            lambda_flow = np.max(np.abs(JD_flow), axis=0)
         else:
-            H_norm = np.zeros(nx)
+            lambda_flow = np.max(np.abs(JD_flow), axis=(0, 1))
+        lambda_max = np.maximum(lambda_source, lambda_flow)
+
+        # # H = self._fd_hessian_source(u)
+        # # if H.size > 0:
+        # #     if JD.ndim == 2:
+        # #         H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1)))
+        # #     else:
+        # #         H_norm = np.sqrt(np.sum(H ** 2, axis=(0, 1, 2)))
+        # # else:
+        # #     H_norm = np.zeros(nx)
 
         # # H/J penalty (removed: found unnecessary, slightly hurt B)
         # ratio = H_norm / (J_norm + 1e-300)
@@ -394,24 +400,19 @@ class AdvReactUni1DEval:
         # penalty_hj = np.clip(arg_hj, 0.0, 1e300)
         # penalty_hj = penalty_hj / (1.0 + penalty_hj)
 
-        # Spatial gradient penalty on lambda_max
-        dx = self.fv.hx
-        grad = np.abs(np.roll(lambda_max, -1) - np.roll(lambda_max, 1)) / (2 * dx)
-        rel_grad = grad / (lambda_max + 1e-300)
-        arg_g = (rel_grad - 30.0) / 40.0
-        grad_pen = np.clip(arg_g, 0.0, 1e300)
-        grad_pen = grad_pen / (1.0 + grad_pen)
-        penalty_grad = grad_pen
+        # # Spatial gradient penalty (removed: redundant with flow-aware bandpass)
+        # dx = self.fv.hx
+        # grad = np.abs(np.roll(lambda_max, -1) - np.roll(lambda_max, 1)) / (2 * dx)
+        # rel_grad = grad / (lambda_max + 1e-300)
+        # arg_g = (rel_grad - 30.0) / 40.0
+        # grad_pen = np.clip(arg_g, 0.0, 1e300)
+        # grad_pen = grad_pen / (1.0 + grad_pen)
+        # penalty_grad = grad_pen
 
-        # # Low-Hessian penalty for scalar systems (removed: found unnecessary)
-        # penalty_lowH = np.zeros(nx)
-        # if JD.ndim == 2:
-        #     penalty_lowH = np.where(H_norm < 200.0, 1.0, 0.0)
+        # # Absolute Hessian penalty (removed: redundant with flow-aware bandpass)
+        # penalty_highH = np.where(H_norm > 800.0, 1.0, 0.0)
 
-        # Absolute Hessian penalty (separates A from B)
-        penalty_highH = np.where(H_norm > 800.0, 1.0, 0.0)
-
-        penalty = np.maximum.reduce((penalty_grad, penalty_highH))
+        penalty = np.zeros(nx)  # No penalties needed; flow-aware bandpass handles separation
 
         # Bandpass indicator on lambda_max * dt (peaks at lambda*dt = 1)
         x = lambda_max * dt
